@@ -1,0 +1,5 @@
+.produce .photo{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s ease}
+.card:hover .produce .photo{transform:scale(1.08)}
+label.low{color:#96660b;background:#fff1ce}
+.mini{width:48px;height:48px;overflow:hidden;border-radius:50%;display:block}
+.miniPhoto{width:48px;height:48px;object-fit:cover;display:block}
