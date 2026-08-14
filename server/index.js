@@ -23,7 +23,17 @@ async function notifyOwner(order) {
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   const recipients = (process.env.WHATSAPP_RECIPIENT_PHONE || '').split(',').map(x => x.trim()).filter(Boolean);
-  if (!phoneId || !token || !recipients.length) return { sent:false, reason:'WhatsApp is not configured' };
+  const messageText = [
+    '*New Shri Vegetables order*',
+    `Order: ${order.id}`,
+    `Name: ${order.customer.name}`,
+    `Phone: ${order.customer.phone}`,
+    `Address: ${order.customer.address}`,
+    `Items: ${order.items.map(item=>`${item.name} x${item.quantity}`).join(', ')}`,
+    `Total: ₹${order.total}`
+  ].join('\n');
+  if (!recipients.length) return { sent:false, status:'not-configured', reason:'No owner WhatsApp number is configured' };
+  if (!phoneId || !token) return { sent:false, status:'ready-to-send', whatsappUrl:`https://wa.me/${recipients[0]}?text=${encodeURIComponent(messageText)}`, recipient:recipients[0] };
   const version = process.env.WHATSAPP_GRAPH_VERSION || 'v22.0';
   const template = process.env.WHATSAPP_TEMPLATE_NAME || 'order_alert';
   const language = process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US';
@@ -37,7 +47,7 @@ async function notifyOwner(order) {
   }));
   const failures = results.filter(r => r.status === 'rejected');
   if (failures.length) console.error('WhatsApp order alert failed:', failures.map(r=>r.reason.message).join(' | '));
-  return { sent:failures.length === 0, recipients:recipients.length };
+  return { sent:failures.length === 0, status:failures.length ? 'failed' : 'sent', recipients:recipients.length };
 }
 const admin = (req,res,next) => { try { req.user = jwt.verify((req.headers.authorization || '').replace('Bearer ',''), secret); next(); } catch { res.status(401).json({message:'Please sign in as admin.'}); } };
 app.use(cors()); app.use(express.json()); app.use(morgan('tiny'));

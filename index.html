@@ -1,1 +1,29 @@
-<div id="root"></div><script type="module" src="/src/main.jsx"></script>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#173b2a" />
+    <meta name="description" content="Fresh vegetables from Shri Vegetables, delivered to your door." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/shri-192.svg" />
+    <title>Shri Vegetables</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <button id="pwa-install" type="button" aria-label="Download Shri Vegetables app">↓ Download App</button>
+    <p id="pwa-help" hidden>On your phone, open the browser menu and choose <b>Install app</b> or <b>Add to Home screen</b>.</p>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      let installPrompt;
+      const installButton = document.getElementById('pwa-install');
+      const help = document.getElementById('pwa-help');
+      window.addEventListener('beforeinstallprompt', event => { installPrompt = event; event.preventDefault(); });
+      installButton.addEventListener('click', async () => {
+        if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; return; }
+        help.hidden = false; setTimeout(() => { help.hidden = true; }, 7000);
+      });
+      if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    </script>
+  </body>
+</html>
