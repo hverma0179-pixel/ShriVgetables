@@ -57,7 +57,22 @@ app.post('/api/admin/login', (req,res) => { const {email,password}=req.body; if 
 app.post('/api/products',admin,(req,res)=>{ const db=read(); const product={id:Date.now(),...req.body,price:Number(req.body.price),stock:Number(req.body.stock),image:req.body.image||'🥬'}; db.products.unshift(product); write(db); res.status(201).json(product); });
 app.put('/api/products/:id',admin,(req,res)=>{const db=read(); const i=db.products.findIndex(p=>p.id==req.params.id); if(i<0)return res.sendStatus(404); db.products[i]={...db.products[i],...req.body,price:Number(req.body.price),stock:Number(req.body.stock)}; write(db);res.json(db.products[i]);});
 app.delete('/api/products/:id',admin,(req,res)=>{const db=read();db.products=db.products.filter(p=>p.id!=req.params.id);write(db);res.sendStatus(204);});
-app.post('/api/orders',async(req,res)=>{const {customer,items}=req.body; if(!customer?.name||!customer?.phone||!customer?.address||!items?.length)return res.status(400).json({message:'Please complete your delivery details.'}); const db=read(); for(const item of items){const p=db.products.find(x=>x.id===item.id);if(!p||p.stock<item.quantity)return res.status(400).json({message:`${item.name} is no longer available in that quantity.`});p.stock-=item.quantity;}const order={id:`SV${Date.now().toString().slice(-7)}`,customer,items,total:items.reduce((s,x)=>s+x.price*x.quantity,0),status:'Confirmed',createdAt:new Date().toISOString(),adminRead:false,adminReadAt:null,notification:{sent:false,status:'pending'}};db.orders.unshift(order);write(db);try{order.notification={...(await notifyOwner(order)),status:'processed'}}catch(error){console.error('WhatsApp order alert failed:',error.message);order.notification={sent:false,status:'failed'}}write(db);res.status(201).json(order);});
+app.post('/api/orders', async (req, res) => {
+  const { customer, items } = req.body;
+  if (!customer?.name?.trim() || !customer?.phone?.trim() || !customer?.address?.trim() || !Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Please complete your delivery details.' });
+  const db = read(); const confirmedItems = [];
+  for (const item of items) {
+    const quantity = Number(item.quantity); const product = db.products.find(product => product.id == item.id);
+    if (!Number.isInteger(quantity) || quantity < 1 || !product || product.stock < quantity) return res.status(400).json({ message: `${product?.name || 'This item'} is no longer available in that quantity.` });
+    product.stock -= quantity;
+    confirmedItems.push({ id: product.id, name: product.name, price: product.price, unit: product.unit, quantity });
+  }
+  const order = { id:`SV${Date.now().toString().slice(-7)}`, customer:{ name:customer.name.trim(), phone:customer.phone.trim(), address:customer.address.trim() }, items:confirmedItems, total:confirmedItems.reduce((sum,item)=>sum+item.price*item.quantity,0), status:'Confirmed', createdAt:new Date().toISOString(), adminRead:false, adminReadAt:null, notification:{sent:false,status:'pending'} };
+  db.orders.unshift(order); write(db);
+  try { order.notification = { ...(await notifyOwner(order)), status:'processed' }; }
+  catch (error) { console.error('WhatsApp order alert failed:',error.message); order.notification={sent:false,status:'failed'}; }
+  write(db); res.status(201).json(order);
+});
 app.get('/api/orders',admin,(_,res)=>res.json(read().orders));
 app.patch('/api/orders/:id/read',admin,(req,res)=>{const db=read();const order=db.orders.find(item=>item.id===req.params.id);if(!order)return res.sendStatus(404);order.adminRead=true;order.adminReadAt=new Date().toISOString();write(db);res.json(order);});
 app.use(express.static(path.join(__dirname, '../dist'), {
