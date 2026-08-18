@@ -1,4 +1,4 @@
-const CACHE = 'shri-vegetables-v1';
+const CACHE = 'shri-vegetables-v3';
 const APP_FILES = ['/', '/manifest.webmanifest', '/icons/shri-192.svg', '/icons/shri-512.svg'];
 
 self.addEventListener('install', event => {
@@ -9,8 +9,17 @@ self.addEventListener('activate', event => event.waitUntil(caches.keys().then(ke
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).then(response => {
+      if (response.ok) caches.open(CACHE).then(cache => cache.put('/', response.clone()));
+      return response;
+    }).catch(() => caches.match('/') ));
+    return;
+  }
+  // Always request current scripts and styles first. Cache-first can serve an
+  // old React bundle after deployment and leave only the PWA install UI visible.
+  event.respondWith(fetch(event.request).then(response => {
     if (response.ok) caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
     return response;
-  }).catch(() => caches.match('/'))));
+  }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/'))));
 });
