@@ -1,6 +1,6 @@
 # Shri Vegetables
 
-A full-stack vegetable storefront with 120 starter products, inventory-aware ordering and an admin catalogue panel.
+A full-stack vegetable storefront with 40 starter products, inventory-aware ordering and an admin catalogue panel.
 
 ## Run locally
 
@@ -16,7 +16,7 @@ Shri Vegetables is an installable Progressive Web App. After you deploy it with 
 
 ## Admin
 
-Open **Admin** in the site header and log in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`. The initial catalog is generated from the central source in `server/seed.js`. Once the application runs, additions, orders and stock updates are stored in `data/store.json`.
+Open **Admin** in the site header and log in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`. The admin can add products, edit their names, Hindi names, prices, stock, descriptions and image paths, or permanently remove products. The initial 40-product catalog is generated from `server/seed.js`. Once the application runs, additions, edits, orders and stock updates are stored in `data/store.json`.
 
 ## Render deployment
 
