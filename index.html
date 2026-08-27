@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#173b2a" />
+    <meta name="theme-color" content="#124832" />
+    <meta name="color-scheme" content="light" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Shri Veg" />
     <meta name="description" content="Fresh vegetables from Shri Vegetables, delivered to your door." />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/shri-192.svg" />
@@ -16,12 +20,13 @@
     <script type="module" src="/src/main.jsx"></script>
     <script>
       let installPrompt;
+      installButton.hidden = true;
       const installButton = document.getElementById('pwa-install');
       const help = document.getElementById('pwa-help');
-      window.addEventListener('beforeinstallprompt', event => { installPrompt = event; event.preventDefault(); });
+      window.addEventListener('beforeinstallprompt', event => { installPrompt = event; event.preventDefault(); installButton.hidden = false; });
       installButton.addEventListener('click', async () => {
         if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; return; }
-        help.hidden = false; setTimeout(() => { help.hidden = true; }, 7000);
+        installButton.hidden = false; help.hidden = false; setTimeout(() => { help.hidden = true; }, 7000);
       });
       if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
     </script>

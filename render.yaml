@@ -4,10 +4,31 @@ services:
     env: node
     buildCommand: npm install && npm run build
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_EMAIL
         value: admin@shrivegetables.in
       - key: ADMIN_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: DATABASE_URL
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:admin@shrivegetables.in
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_RECIPIENT_PHONE
         sync: false
