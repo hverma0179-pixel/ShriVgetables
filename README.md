@@ -37,3 +37,8 @@ This is an installable Progressive Web App. After HTTPS deployment, use the brow
 ## Images and performance
 
 The 15 live catalogue entries in server/seed.js use correctly named WebP files from public/products/vegetables. Product images load lazily. Source photographs are recoverably kept in image-originals; npm run optimize:images can rebuild optimized copies.
+
+
+## Coupons and referrals
+
+The Basket contains the promotion controls. SHRI50 gives ₹50 off to the first 1,000 unique phone accounts and can be redeemed once per account. Customers can create a personal referral code and link only from their Basket. An invited customer confirms the code on entry; their first confirmed order unlocks separate one-time ₹25, ₹50 and ₹75 rewards for referral milestones one, two and three. Server-side validation prevents self-referrals, duplicate referral counting, reused rewards and client-side price changes. Admin shows coupon usage and referral totals.

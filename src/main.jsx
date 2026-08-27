@@ -43,6 +43,7 @@ function Icon({ name }) {
 }
 
 function App() {
+  const incomingReferral = new URLSearchParams(location.search).get('ref') || '';
   const getPage = () => new URLSearchParams(location.search).get('page') || 'shop';
   const [page, setPage] = useState(getPage);
   const [products, setProducts] = useState([]);
@@ -51,6 +52,7 @@ function App() {
   const [favorites, setFavorites] = useState(() => readLocal('shri_favorites', []));
   const [selected, setSelected] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [referralGate, setReferralGate] = useState(incomingReferral);
   const [toast, setToast] = useState('');
 
   const loadProducts = useCallback(async () => {
@@ -113,6 +115,7 @@ function App() {
     <footer><div className="footer-brand"><b>श्री</b><span>SHRI VEGETABLES</span></div><p>Fresh produce, clear prices, simple ordering.</p><button onClick={() => navigate('admin')}>Admin</button><small>© {new Date().getFullYear()} Shri Vegetables</small></footer>
     {selected && <Details product={selected} add={() => addToCart(selected)} close={() => setSelected(null)} />}
     {aiOpen && <AiAssistant close={() => setAiOpen(false)} approve={approveAiPlan} />}
+    {referralGate && <ReferralGate initialCode={referralGate} close={() => { history.replaceState({}, '', '/'); setReferralGate(''); }} accepted={code => { localStorage.setItem('shri_pending_referral', code); history.replaceState({}, '', '/'); setPage('shop'); setReferralGate(''); setToast('Referral linked. Place your first order to unlock your friend’s reward.'); }} />}
     {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}
   </>;
 }
@@ -220,29 +223,123 @@ function AiAssistant({ close, approve }) {
   </div></div>;
 }
 
+function ReferralGate({ initialCode, accepted, close }) {
+  const [code, setCode] = useState(initialCode || '');
+  const [error, setError] = useState('');
+  const [checking, setChecking] = useState(false);
+  const submit = async event => {
+    event.preventDefault();
+    setChecking(true); setError('');
+    try {
+      const result = await api('/referrals/validate', { method: 'POST', body: JSON.stringify({ code }) });
+      accepted(result.code);
+    } catch (reason) { setError(reason.message); }
+    finally { setChecking(false); }
+  };
+  return <div className="referral-gate"><div className="referral-gate-card"><div className="gift-mark">🎁</div><span className="eyebrow">YOU WERE INVITED</span><h1>Enter your referral code</h1><p>Confirm the code to open Shri Vegetables. Your first confirmed order will unlock a reward for the friend who invited you.</p><form onSubmit={submit}><input autoFocus required value={code} onChange={event => setCode(event.target.value.toUpperCase())} placeholder="SHRI-XXXXXX" /><button className="primary" disabled={checking}>{checking ? 'Checking…' : <>Enter Shri Vegetables <Icon name="arrow" /></>}</button></form>{error && <div className="notice error-notice">{error}</div>}<button className="text-button" onClick={close}>Continue without referral</button></div></div>;
+}
+
+function ReferralBox({ form, selectedRewardId, onSelectReward }) {
+  const [profile, setProfile] = useState(() => readLocal('shri_referral_owner', null));
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const saveProfile = value => {
+    setProfile(value);
+    localStorage.setItem('shri_referral_owner', JSON.stringify({ code: value.code, phone: form.phone || profile?.phone, ...value }));
+  };
+  const refresh = useCallback(async () => {
+    const saved = readLocal('shri_referral_owner', null);
+    if (!saved?.code || !saved?.phone) return;
+    try {
+      const result = await api('/referrals/status', { method: 'POST', body: JSON.stringify({ code: saved.code, phone: saved.phone }) });
+      setProfile({ ...saved, ...result });
+      localStorage.setItem('shri_referral_owner', JSON.stringify({ ...saved, ...result }));
+    } catch { /* Keep the locally saved referral visible while offline. */ }
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const createReferral = async () => {
+    setMessage('');
+    if (!form.name || String(form.phone).replace(/\D/g, '').length < 10) { setMessage('Enter your name and valid phone number in Delivery Details first.'); return; }
+    setBusy(true);
+    try {
+      const result = await api('/referrals', { method: 'POST', body: JSON.stringify({ name: form.name, phone: form.phone }) });
+      saveProfile({ ...result, phone: form.phone });
+      setMessage('Your private referral link is ready.');
+    } catch (reason) { setMessage(reason.message); }
+    finally { setBusy(false); }
+  };
+  const share = async () => {
+    const text = 'Shop fresh with Shri Vegetables. Enter my referral code ' + profile.code + ': ' + profile.link;
+    try {
+      if (navigator.share) await navigator.share({ title: 'Shri Vegetables referral', text, url: profile.link });
+      else { await navigator.clipboard.writeText(text); setMessage('Referral link and code copied.'); }
+    } catch (error) { if (error.name !== 'AbortError') setMessage('Copy this link: ' + profile.link); }
+  };
+
+  return <div className="referral-box"><div className="referral-title"><div><span className="eyebrow">REFER & EARN</span><h3>Invite friends from your basket</h3></div><span>₹25 → ₹50 → ₹75</span></div>
+    {!profile?.code ? <><p>Create your personal code and link. Rewards unlock after each invited friend places their first confirmed order.</p><button className="soft-button" onClick={createReferral} disabled={busy}>{busy ? 'Creating…' : 'Create referral code & link'}</button></>
+      : <><div className="referral-code-row"><div><small>YOUR CODE</small><b>{profile.code}</b></div><button className="primary" onClick={share}>Share link</button></div>
+        <div className="reward-steps">{profile.rewards?.map((reward, index) => <button type="button" key={reward.id} disabled={!reward.unlocked || reward.used} className={(selectedRewardId === reward.id ? 'selected ' : '') + (reward.used ? 'used' : reward.unlocked ? 'unlocked' : 'locked')} onClick={() => onSelectReward(reward.id)}>
+          <span>{index + 1}</span><b>{money(reward.amount)}</b><small>{reward.used ? 'Used' : reward.unlocked ? 'Use reward' : 'Locked'}</small>
+        </button>)}</div>
+        <p className="referral-progress">{Math.min(profile.referralCount || 0, 3)} of 3 successful referrals · <button type="button" onClick={refresh}>Refresh</button></p>
+      </>}
+    {message && <small className="referral-message">{message}</small>}
+  </div>;
+}
+
 function Cart({ cart, setCart, navigate, reloadStore }) {
   const [form, setForm] = useState(() => readLocal('shri_customer', { name: '', phone: '', address: '', deliverySlot: 'Today · 5 PM – 8 PM', paymentMethod: 'Cash on delivery', notes: '' }));
   const [approved, setApproved] = useState(false);
   const [placing, setPlacing] = useState(false);
   const [order, setOrder] = useState(null);
   const [error, setError] = useState('');
-  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const [couponInput, setCouponInput] = useState('');
+  const [rewardId, setRewardId] = useState('');
+  const [quote, setQuote] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const lastBasket = readLocal('shri_last_basket', []);
+  const pendingReferral = localStorage.getItem('shri_pending_referral') || '';
+
   useEffect(() => { localStorage.setItem('shri_customer', JSON.stringify(form)); }, [form]);
+  useEffect(() => { setQuote(null); }, [subtotal, form.phone, couponInput, rewardId]);
   const quantity = (id, change) => setCart(current => current.map(item => item.id === id ? { ...item, quantity: Math.max(0, Math.min(item.stock, item.quantity + change)) } : item).filter(item => item.quantity > 0));
+
+  const applySavings = async () => {
+    if (!couponInput.trim() && !rewardId) { setError('Enter SHRI50 or select an unlocked referral reward.'); return; }
+    setSaving(true); setError('');
+    try {
+      const result = await api('/promotions/quote', { method: 'POST', body: JSON.stringify({ phone: form.phone, couponCode: couponInput, rewardId, items: cart.map(({ id, quantity }) => ({ id, quantity })) }) });
+      setQuote(result);
+    } catch (reason) { setError(reason.message); setQuote(null); }
+    finally { setSaving(false); }
+  };
+
   const placeOrder = async event => {
     event.preventDefault();
     if (!approved || placing) return;
     setPlacing(true); setError('');
     try {
-      const created = await api('/orders', { method: 'POST', body: JSON.stringify({ customer: form, items: cart.map(({ id, quantity }) => ({ id, quantity })) }) });
+      const couponApplied = quote?.promotions?.some(item => item.type === 'coupon') ? couponInput : '';
+      const rewardApplied = quote?.promotions?.some(item => item.type === 'referral') ? rewardId : '';
+      const created = await api('/orders', { method: 'POST', body: JSON.stringify({
+        customer: form,
+        items: cart.map(({ id, quantity }) => ({ id, quantity })),
+        couponCode: couponApplied,
+        referralRewardId: rewardApplied,
+        referralCode: pendingReferral
+      }) });
       localStorage.setItem('shri_last_basket', JSON.stringify(cart));
+      if (pendingReferral) localStorage.removeItem('shri_pending_referral');
       setCart([]); setOrder(created); await reloadStore();
-    } catch (reason) { setError(reason.message); }
+    } catch (reason) { setError(reason.message); setQuote(null); }
     finally { setPlacing(false); }
   };
 
-  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER CONFIRMED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is confirmed for <b>{order.customer.deliverySlot}</b>. The store has been notified.</p><div><span>Total</span><strong>{money(order.total)}</strong></div><button className="primary" onClick={() => navigate('shop')}>Continue shopping <Icon name="arrow" /></button></main>;
+  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER CONFIRMED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is confirmed for <b>{order.customer.deliverySlot}</b>. The store has been notified.</p><div className="success-total"><span>{order.discount > 0 ? 'Total after savings' : 'Total'}</span><strong>{money(order.total)}</strong></div>{order.discount > 0 && <p className="saving-confirmed">You saved {money(order.discount)} on this order.</p>}<button className="primary" onClick={() => navigate('shop')}>Continue shopping <Icon name="arrow" /></button></main>;
 
   return <main className="cart-page"><div className="page-title"><span className="eyebrow">YOUR FRESH ORDER</span><h1>Basket & delivery</h1><p>Review every item before confirming.</p></div>
     {!cart.length ? <div className="empty-state basket-empty"><span>🧺</span><h3>Your basket is empty</h3><p>Choose fresh produce or ask the AI helper to make a list.</p><div>{lastBasket.length > 0 && <button className="soft-button" onClick={() => setCart(lastBasket)}>Repeat last basket</button>}<button className="primary" onClick={() => navigate('shop')}>Shop vegetables <Icon name="arrow" /></button></div></div>
@@ -250,13 +347,16 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
         <section className="basket-lines"><h2>Your items <small>{cart.reduce((sum, item) => sum + item.quantity, 0)} items</small></h2>
           {cart.map(item => <article className="basket-line" key={item.id}><ProductImage src={item.imageUrl} alt={item.name} /><div><b>{item.name}</b><span>{item.hindiName} · {money(item.price)} / {item.unit}</span></div><div className="counter"><button onClick={() => quantity(item.id, -1)}><Icon name="minus" /></button><b>{item.quantity}</b><button onClick={() => quantity(item.id, 1)}><Icon name="plus" /></button></div><strong>{money(item.price * item.quantity)}</strong><button className="remove-button" onClick={() => setCart(current => current.filter(product => product.id !== item.id))}><Icon name="trash" /></button></article>)}
           <button className="text-button" onClick={() => navigate('shop')}>← Add more products</button>
+          <ReferralBox form={form} selectedRewardId={rewardId} onSelectReward={id => setRewardId(current => current === id ? '' : id)} />
         </section>
         <form className="delivery-card" onSubmit={placeOrder}><span className="eyebrow">DELIVERY DETAILS</span><h2>Where should we bring it?</h2>
           <div className="two-fields"><label>Full name<input required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Your name" /></label><label>Phone number<input required inputMode="tel" value={form.phone} onChange={event => setForm({ ...form, phone: event.target.value })} placeholder="+91…" /></label></div>
           <label>Complete address<textarea required value={form.address} onChange={event => setForm({ ...form, address: event.target.value })} placeholder="House, street, landmark and area" /></label>
           <div className="two-fields"><label>Delivery time<select value={form.deliverySlot} onChange={event => setForm({ ...form, deliverySlot: event.target.value })}><option>Today · 5 PM – 8 PM</option><option>Tomorrow · 8 AM – 11 AM</option><option>Tomorrow · 5 PM – 8 PM</option><option>As soon as possible</option></select></label><label>Payment<select value={form.paymentMethod} onChange={event => setForm({ ...form, paymentMethod: event.target.value })}><option>Cash on delivery</option><option>UPI at delivery</option></select></label></div>
           <label>Notes (optional)<input value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} placeholder="Gate, ripeness or delivery notes" /></label>
-          <div className="bill"><span>Subtotal</span><b>{money(total)}</b><span>Delivery</span><b>Confirmed by store</b><strong>Total</strong><strong>{money(total)}</strong></div>
+          {pendingReferral && <div className="linked-referral"><Icon name="check" /><div><b>Referral linked: {pendingReferral}</b><small>Your first confirmed order unlocks your friend’s next reward.</small></div></div>}
+          <div className="promotion-box"><span className="eyebrow">COUPON & REWARDS</span><div className="coupon-row"><input value={couponInput} onChange={event => setCouponInput(event.target.value.toUpperCase().replace(/\s/g, ''))} placeholder="Enter coupon code" /><button type="button" className="details-button" onClick={applySavings} disabled={saving}>{saving ? 'Checking…' : 'Apply savings'}</button></div><small>Use SHRI50 for ₹50 off. Limited to the first 1,000 phone accounts, one use each.</small>{rewardId && <p>Referral reward selected. Tap Apply savings to verify it.</p>}{quote?.discount > 0 && <div className="applied-saving"><Icon name="check" />Savings applied: {money(quote.discount)}</div>}</div>
+          <div className="bill"><span>Subtotal</span><b>{money(subtotal)}</b>{quote?.discount > 0 && <><span>Coupon & referral savings</span><b className="discount-line">−{money(quote.discount)}</b></>}<span>Delivery</span><b>Confirmed by store</b><strong>Total</strong><strong>{money(quote?.total ?? subtotal)}</strong></div>
           <label className="approval"><input type="checkbox" checked={approved} onChange={event => setApproved(event.target.checked)} />I reviewed the basket and agree to place this order.</label>
           {error && <div className="notice error-notice">{error}</div>}
           <button className="primary place-order" disabled={!approved || placing}>{placing ? <><span className="spinner" />Confirming…</> : <>Confirm & place order <Icon name="arrow" /></>}</button>
@@ -291,6 +391,7 @@ function Admin({ reloadStore }) {
   const [credentials, setCredentials] = useState({ email: 'admin@shrivegetables.in', password: '' });
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [promotions, setPromotions] = useState(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -355,12 +456,13 @@ function Admin({ reloadStore }) {
     <div className="admin-heading"><div><span className="eyebrow">ADMIN PANEL</span><h1>Good day. Here’s your store.</h1><p>Orders refresh automatically every 12 seconds.</p></div><div className="admin-actions"><button className="notify-button" onClick={enableAlerts}><Icon name="bell" />Enable device alerts</button><button className="primary" onClick={() => { setAdding(true); setEditing(null); }}><Icon name="plus" />Add product</button></div></div>
     {alerts && <div className="notice success-notice">{alerts}</div>}{error && <div className="notice error-notice">{error}</div>}
     <section className="admin-stats"><div><span>Catalogue</span><b>{products.length}</b><small>active products</small></div><div><span>Orders</span><b>{orders.length}</b><small>all time</small></div><div className={unread.length ? 'attention' : ''}><span>Needs attention</span><b>{unread.length}</b><small>new orders</small></div><div><span>Catalogue value</span><b>{money(products.reduce((sum, product) => sum + product.price * product.stock, 0))}</b><small>current stock</small></div></section>
+    {promotions && <div className="admin-promo-card"><div><div><span>SHRI50 USAGE</span><b>{promotions.coupon.used} / {promotions.coupon.limit}</b><small>{promotions.coupon.remaining} account uses remaining</small></div><div><span>REFERRAL MEMBERS</span><b>{promotions.referrals.length}</b><small>{promotions.referrals.reduce((sum, item) => sum + item.referralCount, 0)} successful referrals</small></div></div></div>}
     {(adding || editing) && <ProductForm product={editing} onCancel={() => { setAdding(false); setEditing(null); }} onSaved={saved} />}
     <section className="admin-section"><div className="admin-section-title"><div><h2>Incoming orders</h2><p>Newest first · live refresh</p></div><button className="text-button" onClick={refresh}>Refresh now</button></div>
       {!orders.length ? <div className="empty-state small"><span>🔔</span><h3>No orders yet</h3></div> : <div className="order-list">{orders.map(order => <article className={'admin-order ' + (!order.adminRead ? 'unread' : '')} key={order.id}>
         <div className="order-top"><div><span className="order-id">{order.id}</span>{!order.adminRead && <b className="new-badge">NEW</b>}<h3>{order.customer.name}</h3><p>{order.customer.phone} · {order.customer.address}</p></div><div><strong>{money(order.total)}</strong><span>{new Date(order.createdAt).toLocaleString('en-IN')}</span></div></div>
         <div className="order-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
-        <div className="order-meta"><span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
+        <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
         {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark handled</button>}
       </article>)}</div>}
     </section>

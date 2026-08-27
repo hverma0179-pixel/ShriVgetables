@@ -4,6 +4,7 @@ import morgan from 'morgan';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 import pg from 'pg';
 import webpush from 'web-push';
@@ -27,7 +28,7 @@ let databaseReady;
 
 fs.mkdirSync(dataDir, { recursive: true });
 
-const freshStore = () => ({ products: seedProducts(), orders: [], pushSubscriptions: [], catalogueVersion: 10 });
+const freshStore = () => ({ products: seedProducts(), orders: [], pushSubscriptions: [], referrals: [], couponRedemptions: [], catalogueVersion: 10 });
 const migrate = data => {
   const store = data && typeof data === 'object' ? data : freshStore();
   if (store.catalogueVersion !== 10 || !Array.isArray(store.products) || store.products.length !== 15 || store.products.some(product => !product.imageUrl || !product.hindiName || !product.imageUrl.endsWith('.webp'))) {
@@ -36,6 +37,8 @@ const migrate = data => {
   }
   if (!Array.isArray(store.orders)) store.orders = [];
   if (!Array.isArray(store.pushSubscriptions)) store.pushSubscriptions = [];
+  if (!Array.isArray(store.referrals)) store.referrals = [];
+  if (!Array.isArray(store.couponRedemptions)) store.couponRedemptions = [];
   return store;
 };
 
@@ -157,6 +160,61 @@ const rateLimit = (name, max, windowMs) => (req, res, next) => {
   next();
 };
 
+
+const normalizePhone = value => String(value || '').replace(/\D/g, '').slice(-10);
+const normalizePromoCode = value => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+const referralRewardAmounts = [25, 50, 75];
+const promotionError = message => Object.assign(new Error(message), { status: 400 });
+
+const referralView = referral => ({
+  code: referral.code,
+  ownerName: referral.ownerName,
+  referralCount: referral.referredPhones.length,
+  rewards: referral.rewards.map(reward => ({ id: reward.id, amount: reward.amount, unlocked: Boolean(reward.unlockedAt), used: Boolean(reward.usedAt) }))
+});
+
+const basketFrom = (db, inputs) => {
+  if (!Array.isArray(inputs) || !inputs.length) throw promotionError('Your basket is empty.');
+  const items = inputs.map(input => {
+    const product = db.products.find(item => item.id === Number(input.id));
+    const quantity = Math.max(1, Math.min(20, Math.round(Number(input.quantity) || 0)));
+    if (!product || product.stock < quantity) throw promotionError((input.name || 'An item') + ' is no longer available in that quantity.');
+    return { product, quantity };
+  });
+  return { items, subtotal: items.reduce((sum, item) => sum + item.product.price * item.quantity, 0) };
+};
+
+const discountQuote = (db, { phone, couponCode, rewardId }, subtotal) => {
+  const accountPhone = normalizePhone(phone);
+  const code = normalizePromoCode(couponCode);
+  const promotions = [];
+  let discount = 0;
+
+  if (code) {
+    if (code !== 'SHRI50') throw promotionError('This coupon code is not valid.');
+    if (accountPhone.length !== 10) throw promotionError('Enter a valid phone number before applying the coupon.');
+    const uses = db.couponRedemptions.filter(item => item.code === 'SHRI50');
+    if (uses.length >= 1000) throw promotionError('SHRI50 has reached its 1,000-account limit.');
+    if (uses.some(item => item.phone === accountPhone)) throw promotionError('SHRI50 has already been used by this account.');
+    const amount = Math.min(50, subtotal);
+    discount += amount;
+    promotions.push({ type: 'coupon', code: 'SHRI50', amount });
+  }
+
+  if (rewardId) {
+    if (accountPhone.length !== 10) throw promotionError('Enter your referral phone number before using a reward.');
+    const referral = db.referrals.find(item => item.rewards.some(reward => reward.id === rewardId));
+    const reward = referral?.rewards.find(item => item.id === rewardId);
+    if (!referral || !reward || !reward.unlockedAt || reward.usedAt) throw promotionError('This referral reward is not available.');
+    if (referral.ownerPhone !== accountPhone) throw promotionError('This reward belongs to a different phone account.');
+    const amount = Math.min(reward.amount, Math.max(0, subtotal - discount));
+    discount += amount;
+    promotions.push({ type: 'referral', code: referral.code, rewardId: reward.id, amount });
+  }
+
+  return { subtotal, discount, total: Math.max(0, subtotal - discount), promotions };
+};
+
 app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json({ limit: '100kb' }));
@@ -252,28 +310,145 @@ app.post('/api/ai/recommendations', rateLimit('ai', 12, 10 * 60 * 1000), async (
   } catch (error) { next(error); }
 });
 
+
+app.post('/api/referrals', rateLimit('referrals', 20, 60 * 60 * 1000), async (req, res, next) => {
+  try {
+    const ownerPhone = normalizePhone(req.body.phone);
+    const ownerName = String(req.body.name || '').trim().slice(0, 80);
+    if (ownerPhone.length !== 10 || !ownerName) throw promotionError('Enter your name and a valid phone number to create a referral.');
+    const db = await read();
+    let referral = db.referrals.find(item => item.ownerPhone === ownerPhone);
+    if (!referral) {
+      let code;
+      do { code = 'SHRI-' + crypto.randomBytes(3).toString('hex').toUpperCase(); } while (db.referrals.some(item => item.code === code));
+      referral = {
+        code, ownerName, ownerPhone, createdAt: new Date().toISOString(), referredPhones: [],
+        rewards: referralRewardAmounts.map((amount, index) => ({ id: code + '-R' + (index + 1), amount, unlockedAt: null, usedAt: null, orderId: null }))
+      };
+      db.referrals.push(referral);
+      await write(db);
+    }
+    res.status(201).json({ ...referralView(referral), link: req.protocol + '://' + req.get('host') + '/?ref=' + encodeURIComponent(referral.code) });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/referrals/validate', rateLimit('referral-validate', 40, 60 * 60 * 1000), async (req, res, next) => {
+  try {
+    const code = normalizePromoCode(req.body.code).replace(/^SHRI(?!-)/, 'SHRI-');
+    const referral = (await read()).referrals.find(item => item.code === code);
+    if (!referral) throw promotionError('Referral code not found. Check the code and try again.');
+    res.json({ valid: true, code: referral.code, message: 'Referral linked. The reward unlocks after your first confirmed order.' });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/referrals/status', rateLimit('referral-status', 40, 60 * 60 * 1000), async (req, res, next) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+    const code = normalizePromoCode(req.body.code).replace(/^SHRI(?!-)/, 'SHRI-');
+    const referral = (await read()).referrals.find(item => item.code === code && item.ownerPhone === phone);
+    if (!referral) throw promotionError('Referral details do not match this phone account.');
+    res.json({ ...referralView(referral), link: req.protocol + '://' + req.get('host') + '/?ref=' + encodeURIComponent(referral.code) });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/promotions/quote', rateLimit('promotion-quote', 50, 10 * 60 * 1000), async (req, res, next) => {
+  try {
+    const db = await read();
+    const { subtotal } = basketFrom(db, req.body.items);
+    res.json(discountQuote(db, req.body, subtotal));
+  } catch (error) { next(error); }
+});
+
+app.get('/api/admin/promotions', admin, async (_, res, next) => {
+  try {
+    const db = await read();
+    const uses = db.couponRedemptions.filter(item => item.code === 'SHRI50').length;
+    res.json({
+      coupon: { code: 'SHRI50', amount: 50, used: uses, limit: 1000, remaining: Math.max(0, 1000 - uses) },
+      referrals: db.referrals.map(referral => ({ ...referralView(referral), ownerPhone: referral.ownerPhone, createdAt: referral.createdAt }))
+    });
+  } catch (error) { next(error); }
+});
+
 app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res, next) => {
   try {
-    const { customer = {}, items = [] } = req.body;
+    const { customer = {}, items = [], couponCode = '', referralCode = '', referralRewardId = '' } = req.body;
     const cleanCustomer = {
-      name: String(customer.name || '').trim().slice(0, 80), phone: String(customer.phone || '').trim().slice(0, 24),
-      address: String(customer.address || '').trim().slice(0, 300), deliverySlot: String(customer.deliverySlot || 'As soon as possible').slice(0, 80),
-      paymentMethod: String(customer.paymentMethod || 'Cash on delivery').slice(0, 40), notes: String(customer.notes || '').trim().slice(0, 300)
+      name: String(customer.name || '').trim().slice(0, 80),
+      phone: normalizePhone(customer.phone),
+      address: String(customer.address || '').trim().slice(0, 300),
+      deliverySlot: String(customer.deliverySlot || 'As soon as possible').slice(0, 80),
+      paymentMethod: String(customer.paymentMethod || 'Cash on delivery').slice(0, 40),
+      notes: String(customer.notes || '').trim().slice(0, 300)
     };
-    if (!cleanCustomer.name || !cleanCustomer.phone || !cleanCustomer.address || !Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Please complete your delivery details.' });
-    const db = await read();
-    const orderItems = [];
-    for (const input of items) {
-      const product = db.products.find(item => item.id === Number(input.id));
-      const quantity = Math.max(1, Math.min(20, Math.round(Number(input.quantity) || 0)));
-      if (!product || product.stock < quantity) return res.status(400).json({ message: `${input.name || 'An item'} is no longer available in that quantity.` });
-      product.stock -= quantity;
-      orderItems.push({ id: product.id, name: product.name, hindiName: product.hindiName, price: product.price, unit: product.unit, imageUrl: product.imageUrl, quantity });
+    if (!cleanCustomer.name || cleanCustomer.phone.length !== 10 || !cleanCustomer.address || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ message: 'Please complete your name, valid phone number and delivery address.' });
     }
-    const order = { id: `SV${Date.now().toString().slice(-7)}`, customer: cleanCustomer, items: orderItems, total: orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0), status: 'Confirmed', createdAt: new Date().toISOString(), adminRead: false, adminReadAt: null, notification: { status: 'pending' } };
+
+    const db = await read();
+    const basket = basketFrom(db, items);
+    const quote = discountQuote(db, { phone: cleanCustomer.phone, couponCode, rewardId: referralRewardId }, basket.subtotal);
+    const incomingReferralCode = normalizePromoCode(referralCode).replace(/^SHRI(?!-)/, 'SHRI-');
+    let referredBy = null;
+    let unlockedReward = null;
+
+    if (incomingReferralCode) {
+      const referral = db.referrals.find(item => item.code === incomingReferralCode);
+      if (!referral) throw promotionError('The linked referral code is no longer valid.');
+      if (referral.ownerPhone === cleanCustomer.phone) throw promotionError('You cannot use your own referral link.');
+      const alreadyCustomer = db.orders.some(order => normalizePhone(order.customer?.phone) === cleanCustomer.phone);
+      const countedAnywhere = db.referrals.some(item => item.referredPhones.includes(cleanCustomer.phone));
+      if (!alreadyCustomer && !countedAnywhere) {
+        const rewardIndex = referral.referredPhones.length;
+        referral.referredPhones.push(cleanCustomer.phone);
+        if (rewardIndex < referral.rewards.length) {
+          referral.rewards[rewardIndex].unlockedAt = new Date().toISOString();
+          unlockedReward = { id: referral.rewards[rewardIndex].id, amount: referral.rewards[rewardIndex].amount };
+        }
+        referredBy = referral.code;
+      }
+    }
+
+    const orderItems = basket.items.map(({ product, quantity }) => {
+      product.stock -= quantity;
+      return { id: product.id, name: product.name, hindiName: product.hindiName, price: product.price, unit: product.unit, imageUrl: product.imageUrl, quantity };
+    });
+    const orderId = 'SV' + Date.now().toString().slice(-7);
+
+    for (const promotion of quote.promotions) {
+      if (promotion.type === 'coupon') {
+        db.couponRedemptions.push({ code: promotion.code, phone: cleanCustomer.phone, orderId, amount: promotion.amount, redeemedAt: new Date().toISOString() });
+      }
+      if (promotion.type === 'referral') {
+        const referral = db.referrals.find(item => item.rewards.some(reward => reward.id === promotion.rewardId));
+        const reward = referral?.rewards.find(item => item.id === promotion.rewardId);
+        if (reward) { reward.usedAt = new Date().toISOString(); reward.orderId = orderId; }
+      }
+    }
+
+    const order = {
+      id: orderId,
+      customer: cleanCustomer,
+      items: orderItems,
+      subtotal: quote.subtotal,
+      discount: quote.discount,
+      total: quote.total,
+      promotions: quote.promotions,
+      referredBy,
+      referralRewardUnlocked: unlockedReward,
+      status: 'Confirmed',
+      createdAt: new Date().toISOString(),
+      adminRead: false,
+      adminReadAt: null,
+      notification: { status: 'pending' }
+    };
     db.orders.unshift(order);
     await write(db);
-    const [whatsapp, push] = await Promise.all([notifyOwner(order).catch(error => ({ sent: false, status: 'failed', error: error.message })), sendAdminPush(order, db).catch(error => ({ sent: false, status: 'failed', error: error.message }))]);
+
+    const [whatsapp, push] = await Promise.all([
+      notifyOwner(order).catch(error => ({ sent: false, status: 'failed', error: error.message })),
+      sendAdminPush(order, db).catch(error => ({ sent: false, status: 'failed', error: error.message }))
+    ]);
     order.notification = { whatsapp, push, status: 'processed' };
     await write(db);
     res.status(201).json(order);
@@ -294,7 +469,8 @@ app.get('*', (_, res) => res.sendFile(path.join(__dirname, '../dist/index.html')
 app.use((error, req, res, next) => {
   console.error(error);
   if (res.headersSent) return next(error);
-  res.status(500).json({ message: process.env.NODE_ENV === 'production' ? 'Something went wrong. Please try again.' : error.message });
+  const status = Number(error.status) || 500;
+  res.status(status).json({ message: status < 500 || process.env.NODE_ENV !== 'production' ? error.message : 'Something went wrong. Please try again.' });
 });
 
 await read();
