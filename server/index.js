@@ -21,9 +21,9 @@ const read = () => {
   const data = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile, 'utf8')) : { products: seedProducts(), orders: [] };
   // One-time migration: replace the old emoji/remote-image catalogue with the
   // new local-photo Shri Ram vegetable catalogue. Existing customer orders stay.
-  if (data.catalogueVersion !== 5 || !Array.isArray(data.products) || data.products.length !== 40 || data.products.some(product => !product.imageUrl || !product.hindiName)) {
+  if (data.catalogueVersion !== 9 || !Array.isArray(data.products) || data.products.length !== 15 || data.products.some(product => !product.imageUrl || !product.hindiName)) {
     data.products = seedProducts();
-    data.catalogueVersion = 5;
+    data.catalogueVersion = 9;
   }
   fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
   return data;
