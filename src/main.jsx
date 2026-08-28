@@ -5,6 +5,7 @@ import './style.css';
 const API = '/api';
 const fallbackImage = '/products/vegetables/tomato.webp';
 const money = value => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value || 0);
+const ORDER_STAGES = ['Confirmed', 'Packing', 'Out for delivery', 'Delivered'];
 const readLocal = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 };
@@ -109,9 +110,11 @@ function App() {
     <Header page={page} navigate={navigate} cartCount={cartCount} openAi={() => setAiOpen(true)} />
     {page === 'admin'
       ? <Admin reloadStore={loadProducts} />
-      : page === 'cart'
-        ? <Cart cart={cart} setCart={setCart} navigate={navigate} reloadStore={loadProducts} />
-        : <Shop products={products} loading={loading} addToCart={addToCart} favorites={favorites} setFavorites={setFavorites} select={setSelected} openAi={() => setAiOpen(true)} />}
+      : page === 'track'
+        ? <TrackOrder navigate={navigate} />
+        : page === 'cart'
+          ? <Cart cart={cart} setCart={setCart} navigate={navigate} reloadStore={loadProducts} />
+          : <Shop products={products} loading={loading} addToCart={addToCart} favorites={favorites} setFavorites={setFavorites} select={setSelected} openAi={() => setAiOpen(true)} />}
     <footer><div className="footer-brand"><b>श्री</b><span>SHRI VEGETABLES</span></div><p>Fresh produce, clear prices, simple ordering.</p><button onClick={() => navigate('admin')}>Admin</button><small>© {new Date().getFullYear()} Shri Vegetables</small></footer>
     {selected && <Details product={selected} add={() => addToCart(selected)} close={() => setSelected(null)} />}
     {aiOpen && <AiAssistant close={() => setAiOpen(false)} approve={approveAiPlan} />}
@@ -300,12 +303,30 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
   const [rewardId, setRewardId] = useState('');
   const [quote, setQuote] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [baseQuote, setBaseQuote] = useState(null);
+  const [basketInfoOpen, setBasketInfoOpen] = useState(false);
+  const [weeklyBasket, setWeeklyBasket] = useState(() => readLocal('shri_weekly_basket', { enabled: false, day: 'Saturday' }));
+  const [activeOrder, setActiveOrder] = useState(() => readLocal('shri_active_order', null));
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const lastBasket = readLocal('shri_last_basket', []);
   const pendingReferral = localStorage.getItem('shri_pending_referral') || '';
 
   useEffect(() => { localStorage.setItem('shri_customer', JSON.stringify(form)); }, [form]);
+  useEffect(() => { localStorage.setItem('shri_weekly_basket', JSON.stringify(weeklyBasket)); }, [weeklyBasket]);
   useEffect(() => { setQuote(null); }, [subtotal, form.phone, couponInput, rewardId]);
+  useEffect(() => {
+    const phone = form.phone.replace(/\D/g, '').slice(-10);
+    if (!cart.length || phone.length !== 10) { setBaseQuote({ subtotal, discount: 0, deliveryFee: 0, firstDeliveryFree: true, total: subtotal }); return; }
+    const timer = setTimeout(() => api('/promotions/quote', { method: 'POST', body: JSON.stringify({ phone, items: cart.map(({ id, quantity }) => ({ id, quantity })) }) }).then(setBaseQuote).catch(() => setBaseQuote(null)), 300);
+    return () => clearTimeout(timer);
+  }, [subtotal, form.phone, cart]);
+  useEffect(() => {
+    if (!activeOrder?.id || !activeOrder?.phone) return;
+    api('/orders/track', { method: 'POST', body: JSON.stringify({ orderId: activeOrder.id, phone: activeOrder.phone }) }).then(latest => {
+      if (latest.status === 'Delivered') { localStorage.removeItem('shri_active_order'); setActiveOrder(null); }
+      else { const saved = { id: latest.id, phone: activeOrder.phone, status: latest.status }; localStorage.setItem('shri_active_order', JSON.stringify(saved)); setActiveOrder(saved); }
+    }).catch(() => {});
+  }, []);
   const quantity = (id, change) => setCart(current => current.map(item => item.id === id ? { ...item, quantity: Math.max(0, Math.min(item.stock, item.quantity + change)) } : item).filter(item => item.quantity > 0));
 
   const applySavings = async () => {
@@ -330,18 +351,26 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
         items: cart.map(({ id, quantity }) => ({ id, quantity })),
         couponCode: couponApplied,
         referralRewardId: rewardApplied,
-        referralCode: pendingReferral
+        referralCode: pendingReferral,
+        weeklyBasket
       }) });
       localStorage.setItem('shri_last_basket', JSON.stringify(cart));
+      const tracking = { id: created.id, phone: form.phone.replace(/\D/g, '').slice(-10), status: created.status };
+      localStorage.setItem('shri_active_order', JSON.stringify(tracking));
+      setActiveOrder(tracking);
       if (pendingReferral) localStorage.removeItem('shri_pending_referral');
       setCart([]); setOrder(created); await reloadStore();
     } catch (reason) { setError(reason.message); setQuote(null); }
     finally { setPlacing(false); }
   };
 
-  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER CONFIRMED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is confirmed for <b>{order.customer.deliverySlot}</b>. The store has been notified.</p><div className="success-total"><span>{order.discount > 0 ? 'Total after savings' : 'Total'}</span><strong>{money(order.total)}</strong></div>{order.discount > 0 && <p className="saving-confirmed">You saved {money(order.discount)} on this order.</p>}<button className="primary" onClick={() => navigate('shop')}>Continue shopping <Icon name="arrow" /></button></main>;
+  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER CONFIRMED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is confirmed for <b>{order.customer.deliverySlot}</b>. The store has been notified.</p><div className="success-total"><span>{order.discount > 0 ? 'Total after savings' : 'Total'}</span><strong>{money(order.total)}</strong></div>{order.discount > 0 && <p className="saving-confirmed">You saved {money(order.discount)} on this order.</p>}{order.deliveryFee === 0 && <p className="saving-confirmed">Your first delivery is free.</p>}{order.weeklyBasket?.enabled && <p className="weekly-confirmed">Weekly basket preference saved for every {order.weeklyBasket.day}.</p>}<div className="success-actions"><button className="primary" onClick={() => navigate('track')}>Track order</button><button className="soft-button" onClick={() => navigate('shop')}>Continue shopping</button></div></main>;
 
-  return <main className="cart-page"><div className="page-title"><span className="eyebrow">YOUR FRESH ORDER</span><h1>Basket & delivery</h1><p>Review every item before confirming.</p></div>
+  const shownQuote = quote || baseQuote || { subtotal, discount: 0, deliveryFee: 0, firstDeliveryFree: true, total: subtotal };
+  const minimumRemaining = Math.max(0, 100 - subtotal);
+  return <main className="cart-page"><div className="page-title basket-title"><div><span className="eyebrow">YOUR FRESH ORDER</span><h1>Basket & delivery</h1><p>Review every item before confirming.</p></div>{activeOrder && <button className="track-order-button" onClick={() => navigate('track')}><span className="live-dot" />Track active order</button>}</div>
+    <button type="button" className="more-basket-button" onClick={() => setBasketInfoOpen(value => !value)}><span>🧺</span><div><b>More about your Basket</b><small>Weekly ordering, delivery pricing and live tracking</small></div><strong>{basketInfoOpen ? '−' : '+'}</strong></button>
+    {basketInfoOpen && <section className="basket-info-panel"><article><span>📍</span><b>Live order tracking</b><small>See Confirmed, Packing, Out for delivery and Delivered updates.</small></article><article><span>🚚</span><b>Simple delivery pricing</b><small>First delivery free, then only ₹20 per delivery. Minimum order ₹100.</small></article><article className="weekly-choice"><span>📅</span><div><b>Weekly Basket</b><small>Save this basket as your weekly delivery preference.</small><label><input type="checkbox" checked={weeklyBasket.enabled} onChange={event => setWeeklyBasket({ ...weeklyBasket, enabled: event.target.checked })} /> Repeat every week</label>{weeklyBasket.enabled && <select value={weeklyBasket.day} onChange={event => setWeeklyBasket({ ...weeklyBasket, day: event.target.value })}>{['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map(day => <option key={day}>{day}</option>)}</select>}</div></article></section>}
     {!cart.length ? <div className="empty-state basket-empty"><span>🧺</span><h3>Your basket is empty</h3><p>Choose fresh produce or ask the AI helper to make a list.</p><div>{lastBasket.length > 0 && <button className="soft-button" onClick={() => setCart(lastBasket)}>Repeat last basket</button>}<button className="primary" onClick={() => navigate('shop')}>Shop vegetables <Icon name="arrow" /></button></div></div>
       : <div className="checkout-layout">
         <section className="basket-lines"><h2>Your items <small>{cart.reduce((sum, item) => sum + item.quantity, 0)} items</small></h2>
@@ -356,15 +385,71 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
           <label>Notes (optional)<input value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} placeholder="Gate, ripeness or delivery notes" /></label>
           {pendingReferral && <div className="linked-referral"><Icon name="check" /><div><b>Referral linked: {pendingReferral}</b><small>Your first confirmed order unlocks your friend’s next reward.</small></div></div>}
           <div className="promotion-box"><span className="eyebrow">COUPON & REWARDS</span><div className="coupon-row"><input value={couponInput} onChange={event => setCouponInput(event.target.value.toUpperCase().replace(/\s/g, ''))} placeholder="Enter coupon code" /><button type="button" className="details-button" onClick={applySavings} disabled={saving}>{saving ? 'Checking…' : 'Apply savings'}</button></div><small>Use SHRI50 for ₹50 off. Limited to the first 1,000 phone accounts, one use each.</small>{rewardId && <p>Referral reward selected. Tap Apply savings to verify it.</p>}{quote?.discount > 0 && <div className="applied-saving"><Icon name="check" />Savings applied: {money(quote.discount)}</div>}</div>
-          <div className="bill"><span>Subtotal</span><b>{money(subtotal)}</b>{quote?.discount > 0 && <><span>Coupon & referral savings</span><b className="discount-line">−{money(quote.discount)}</b></>}<span>Delivery</span><b>Confirmed by store</b><strong>Total</strong><strong>{money(quote?.total ?? subtotal)}</strong></div>
+          <div className="bill"><span>Subtotal</span><b>{money(subtotal)}</b>{shownQuote.discount > 0 && <><span>Coupon & referral savings</span><b className="discount-line">−{money(shownQuote.discount)}</b></>}<span>Delivery</span><b>{shownQuote.deliveryFee === 0 ? 'FREE · First order' : money(shownQuote.deliveryFee)}</b><strong>Total</strong><strong>{money(shownQuote.total)}</strong></div>
+          {minimumRemaining > 0 && <div className="minimum-order-note">Add {money(minimumRemaining)} more to reach the ₹100 minimum order.</div>}
           <label className="approval"><input type="checkbox" checked={approved} onChange={event => setApproved(event.target.checked)} />I reviewed the basket and agree to place this order.</label>
           {error && <div className="notice error-notice">{error}</div>}
-          <button className="primary place-order" disabled={!approved || placing}>{placing ? <><span className="spinner" />Confirming…</> : <>Confirm & place order <Icon name="arrow" /></>}</button>
+          <button className="primary place-order" disabled={!approved || placing || minimumRemaining > 0}>{placing ? <><span className="spinner" />Confirming…</> : <>Confirm & place order <Icon name="arrow" /></>}</button>
         </form>
       </div>}
   </main>;
 }
 
+function TrackOrder({ navigate }) {
+  const saved = readLocal('shri_active_order', null);
+  const [order, setOrder] = useState(null);
+  const [loading, setLoading] = useState(Boolean(saved));
+  const [error, setError] = useState('');
+  const [lastChecked, setLastChecked] = useState(null);
+  const previousStatus = useRef(saved?.status || '');
+
+  const refresh = useCallback(async () => {
+    if (!saved?.id || !saved?.phone) return;
+    try {
+      const latest = await api('/orders/track', { method: 'POST', body: JSON.stringify({ orderId: saved.id, phone: saved.phone }) });
+      setOrder(latest); setError(''); setLastChecked(new Date());
+      if (previousStatus.current && previousStatus.current !== latest.status && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification('Order ' + latest.status, { body: latest.id + ' has moved to the next stage.', icon: '/icons/shri-192.svg' });
+      }
+      previousStatus.current = latest.status;
+      if (latest.status === 'Delivered') {
+        const history = readLocal('shri_order_history', []);
+        if (!history.some(item => item.id === latest.id)) localStorage.setItem('shri_order_history', JSON.stringify([latest, ...history].slice(0, 20)));
+        localStorage.removeItem('shri_active_order');
+      } else {
+        localStorage.setItem('shri_active_order', JSON.stringify({ id: latest.id, phone: saved.phone, status: latest.status }));
+      }
+    } catch (reason) { setError(reason.message); }
+    finally { setLoading(false); }
+  }, [saved?.id, saved?.phone]);
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  if (!saved) return <main className="track-page"><div className="empty-state"><span>📦</span><h3>No active order</h3><p>Track Order appears here automatically after you place an order.</p><button className="primary" onClick={() => navigate('cart')}>Open basket</button></div></main>;
+  if (loading && !order) return <main className="track-page"><div className="tracking-loader"><span className="spinner" />Loading your live order…</div></main>;
+  if (error && !order) return <main className="track-page"><div className="notice error-notice">{error}</div><button className="soft-button" onClick={() => navigate('cart')}>Back to basket</button></main>;
+
+  const activeIndex = Math.max(0, ORDER_STAGES.indexOf(order.status));
+  return <main className="track-page">
+    <div className="tracking-head"><div><span className="eyebrow">LIVE ORDER UPDATE</span><h1>Track your fresh order</h1><p>Order <b>{order.id}</b> · Updates automatically every 10 seconds</p></div><button className="soft-button" onClick={refresh}>Refresh now</button></div>
+    <section className="tracking-card">
+      <div className="tracking-current"><span className="live-dot" /><div><small>CURRENT STATUS</small><h2>{order.status}</h2></div></div>
+      <div className="tracking-steps">{ORDER_STAGES.map((stage, index) => {
+        const entry = order.statusHistory?.find(item => item.status === stage);
+        return <div className={index <= activeIndex ? 'done' : ''} key={stage}><span>{index < activeIndex ? '✓' : index + 1}</span><div><b>{stage}</b><small>{entry ? new Date(entry.at).toLocaleString('en-IN') : 'Waiting for store update'}</small></div></div>;
+      })}</div>
+      <div className="tracking-summary"><div><span>Delivery slot</span><b>{order.deliverySlot || 'As soon as possible'}</b></div><div><span>Items</span><b>{order.items.reduce((sum, item) => sum + item.quantity, 0)}</b></div><div><span>Total</span><b>{money(order.total)}</b></div></div>
+      <div className="tracked-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
+      {order.status === 'Delivered' && <div className="delivered-message"><Icon name="check" /><div><b>Order delivered</b><small>This order is safely saved in your order history.</small></div></div>}
+      {lastChecked && <p className="last-checked">Last checked at {lastChecked.toLocaleTimeString('en-IN')}</p>}
+    </section>
+    <button className="text-button" onClick={() => navigate('cart')}>← Back to basket</button>
+  </main>;
+}
 const blankProduct = { hindiName: '', name: '', category: 'Fruit vegetables', price: '', stock: '', unit: 'kg', imageUrl: fallbackImage, description: '' };
 function ProductForm({ product, onCancel, onSaved }) {
   const [form, setForm] = useState(product || blankProduct);
@@ -432,6 +517,12 @@ function Admin({ reloadStore }) {
     if (!confirm('Remove ' + product.name + ' from the store?')) return;
     try { await api('/products/' + product.id, { method: 'DELETE' }); saved(); } catch (reason) { setError(reason.message); }
   };
+  const updateOrderStatus = async (order, status) => {
+    try {
+      await api('/orders/' + order.id + '/status', { method: 'PATCH', body: JSON.stringify({ status }) });
+      await refresh();
+    } catch (reason) { setError(reason.message); }
+  };
   const enableAlerts = async () => {
     setAlerts(''); setError('');
     try {
@@ -462,8 +553,9 @@ function Admin({ reloadStore }) {
       {!orders.length ? <div className="empty-state small"><span>🔔</span><h3>No orders yet</h3></div> : <div className="order-list">{orders.map(order => <article className={'admin-order ' + (!order.adminRead ? 'unread' : '')} key={order.id}>
         <div className="order-top"><div><span className="order-id">{order.id}</span>{!order.adminRead && <b className="new-badge">NEW</b>}<h3>{order.customer.name}</h3><p>{order.customer.phone} · {order.customer.address}</p></div><div><strong>{money(order.total)}</strong><span>{new Date(order.createdAt).toLocaleString('en-IN')}</span></div></div>
         <div className="order-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
-        <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
-        {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark handled</button>}
+        <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🚚 Delivery {order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</span><span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.weeklyBasket?.enabled && <span>📅 Weekly · {order.weeklyBasket.day}</span>}{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
+        <div className="admin-status-control"><div><small>CUSTOMER LIVE STATUS</small><b>{order.status || 'Confirmed'}</b></div><div>{ORDER_STAGES.map((status, index) => { const current = Math.max(0, ORDER_STAGES.indexOf(order.status || 'Confirmed')); return <button key={status} disabled={index !== current + 1} className={index <= current ? 'complete' : ''} onClick={() => updateOrderStatus(order, status)}>{index < current ? '✓ ' : ''}{status}</button>; })}</div></div>
+        {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark notification read</button>}
       </article>)}</div>}
     </section>
     <section className="admin-section"><div className="admin-section-title"><div><h2>Product catalogue</h2><p>Every name must stay matched to its photograph.</p></div></div>

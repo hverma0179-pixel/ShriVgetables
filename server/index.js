@@ -164,6 +164,9 @@ const rateLimit = (name, max, windowMs) => (req, res, next) => {
 const normalizePhone = value => String(value || '').replace(/\D/g, '').slice(-10);
 const normalizePromoCode = value => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 const referralRewardAmounts = [25, 50, 75];
+const orderStatuses = ['Confirmed', 'Packing', 'Out for delivery', 'Delivered'];
+const minimumOrderAmount = 100;
+const standardDeliveryFee = 20;
 const promotionError = message => Object.assign(new Error(message), { status: 400 });
 
 const referralView = referral => ({
@@ -212,8 +215,25 @@ const discountQuote = (db, { phone, couponCode, rewardId }, subtotal) => {
     promotions.push({ type: 'referral', code: referral.code, rewardId: reward.id, amount });
   }
 
-  return { subtotal, discount, total: Math.max(0, subtotal - discount), promotions };
+  const previousOrders = accountPhone.length === 10
+    ? db.orders.filter(order => normalizePhone(order.customer?.phone) === accountPhone).length
+    : 0;
+  const deliveryFee = previousOrders === 0 ? 0 : standardDeliveryFee;
+  return { subtotal, discount, deliveryFee, firstDeliveryFree: deliveryFee === 0, total: Math.max(0, subtotal - discount) + deliveryFee, promotions };
 };
+
+const customerOrderView = order => ({
+  id: order.id,
+  items: order.items,
+  subtotal: order.subtotal,
+  discount: order.discount || 0,
+  deliveryFee: order.deliveryFee || 0,
+  total: order.total,
+  status: order.status,
+  statusHistory: order.statusHistory || [{ status: order.status || 'Confirmed', at: order.createdAt }],
+  deliverySlot: order.customer?.deliverySlot,
+  createdAt: order.createdAt
+});
 
 app.set('trust proxy', 1);
 app.use(cors());
@@ -372,7 +392,7 @@ app.get('/api/admin/promotions', admin, async (_, res, next) => {
 
 app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res, next) => {
   try {
-    const { customer = {}, items = [], couponCode = '', referralCode = '', referralRewardId = '' } = req.body;
+    const { customer = {}, items = [], couponCode = '', referralCode = '', referralRewardId = '', weeklyBasket = {} } = req.body;
     const cleanCustomer = {
       name: String(customer.name || '').trim().slice(0, 80),
       phone: normalizePhone(customer.phone),
@@ -387,6 +407,7 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
 
     const db = await read();
     const basket = basketFrom(db, items);
+    if (basket.subtotal < minimumOrderAmount) throw promotionError(`Minimum order is ₹${minimumOrderAmount}. Add ₹${minimumOrderAmount - basket.subtotal} more to continue.`);
     const quote = discountQuote(db, { phone: cleanCustomer.phone, couponCode, rewardId: referralRewardId }, basket.subtotal);
     const incomingReferralCode = normalizePromoCode(referralCode).replace(/^SHRI(?!-)/, 'SHRI-');
     let referredBy = null;
@@ -432,11 +453,17 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
       items: orderItems,
       subtotal: quote.subtotal,
       discount: quote.discount,
+      deliveryFee: quote.deliveryFee,
       total: quote.total,
       promotions: quote.promotions,
       referredBy,
       referralRewardUnlocked: unlockedReward,
+      weeklyBasket: {
+        enabled: Boolean(weeklyBasket.enabled),
+        day: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].includes(weeklyBasket.day) ? weeklyBasket.day : 'Saturday'
+      },
       status: 'Confirmed',
+      statusHistory: [{ status: 'Confirmed', at: new Date().toISOString() }],
       createdAt: new Date().toISOString(),
       adminRead: false,
       adminReadAt: null,
@@ -456,6 +483,37 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
 });
 
 app.get('/api/orders', admin, async (_, res, next) => { try { res.json((await read()).orders); } catch (error) { next(error); } });
+app.post('/api/orders/track', rateLimit('order-track', 80, 10 * 60 * 1000), async (req, res, next) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+    const orderId = String(req.body.orderId || '').trim().toUpperCase();
+    if (phone.length !== 10 || !orderId) throw promotionError('Enter the order ID and the same phone number used at checkout.');
+    const order = (await read()).orders.find(item => item.id === orderId && normalizePhone(item.customer?.phone) === phone);
+    if (!order) throw promotionError('Order details did not match. Please check your order ID and phone number.');
+    res.json(customerOrderView(order));
+  } catch (error) { next(error); }
+});
+app.patch('/api/orders/:id/status', admin, async (req, res, next) => {
+  try {
+    const nextStatus = String(req.body.status || '').trim();
+    if (!orderStatuses.includes(nextStatus)) throw promotionError('Choose a valid order status.');
+    const db = await read();
+    const order = db.orders.find(item => item.id === req.params.id);
+    if (!order) return res.sendStatus(404);
+    const currentIndex = Math.max(0, orderStatuses.indexOf(order.status));
+    const nextIndex = orderStatuses.indexOf(nextStatus);
+    if (nextIndex < currentIndex || nextIndex > currentIndex + 1) throw promotionError('Update the order one step at a time.');
+    if (nextStatus !== order.status) {
+      order.status = nextStatus;
+      order.statusHistory ||= [{ status: 'Confirmed', at: order.createdAt }];
+      order.statusHistory.push({ status: nextStatus, at: new Date().toISOString() });
+    }
+    order.adminRead = true;
+    order.adminReadAt ||= new Date().toISOString();
+    await write(db);
+    res.json(order);
+  } catch (error) { next(error); }
+});
 app.patch('/api/orders/:id/read', admin, async (req, res, next) => {
   try { const db = await read(); const order = db.orders.find(item => item.id === req.params.id); if (!order) return res.sendStatus(404); order.adminRead = true; order.adminReadAt = new Date().toISOString(); await write(db); res.json(order); } catch (error) { next(error); }
 });
