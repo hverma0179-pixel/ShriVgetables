@@ -280,6 +280,18 @@ function ReferralBox({ form, selectedRewardId, onSelectReward }) {
       else { await navigator.clipboard.writeText(text); setMessage('Referral link and code copied.'); }
     } catch (error) { if (error.name !== 'AbortError') setMessage('Copy this link: ' + profile.link); }
   };
+  const removeReferral = async () => {
+    if (!confirm('Remove and deactivate this referral link? Shared copies of the link will stop working.')) return;
+    setBusy(true); setMessage('');
+    try {
+      await api('/referrals/deactivate', { method: 'POST', body: JSON.stringify({ code: profile.code, phone: profile.phone || form.phone }) });
+      if (selectedRewardId) onSelectReward(selectedRewardId);
+      localStorage.removeItem('shri_referral_owner');
+      setProfile(null);
+      setMessage('Referral link removed. Your earned rewards remain safely recorded.');
+    } catch (reason) { setMessage(reason.message); }
+    finally { setBusy(false); }
+  };
 
   return <div className="referral-box"><div className="referral-title"><div><span className="eyebrow">REFER & EARN</span><h3>Invite friends from your basket</h3></div><span>₹25 → ₹50 → ₹75</span></div>
     {!profile?.code ? <><p>Create your personal code and link. Rewards unlock after each invited friend places their first confirmed order.</p><button className="soft-button" onClick={createReferral} disabled={busy}>{busy ? 'Creating…' : 'Create referral code & link'}</button></>
@@ -288,6 +300,7 @@ function ReferralBox({ form, selectedRewardId, onSelectReward }) {
           <span>{index + 1}</span><b>{money(reward.amount)}</b><small>{reward.used ? 'Used' : reward.unlocked ? 'Use reward' : 'Locked'}</small>
         </button>)}</div>
         <p className="referral-progress">{Math.min(profile.referralCount || 0, 3)} of 3 successful referrals · <button type="button" onClick={refresh}>Refresh</button></p>
+        <button type="button" className="remove-referral-link" onClick={removeReferral} disabled={busy}>{busy ? 'Removing…' : 'Remove referral link'}</button>
       </>}
     {message && <small className="referral-message">{message}</small>}
   </div>;

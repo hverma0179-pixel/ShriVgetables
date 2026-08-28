@@ -171,6 +171,7 @@ const promotionError = message => Object.assign(new Error(message), { status: 40
 
 const referralView = referral => ({
   code: referral.code,
+  active: referral.active !== false,
   ownerName: referral.ownerName,
   referralCount: referral.referredPhones.length,
   rewards: referral.rewards.map(reward => ({ id: reward.id, amount: reward.amount, unlocked: Boolean(reward.unlockedAt), used: Boolean(reward.usedAt) }))
@@ -347,6 +348,11 @@ app.post('/api/referrals', rateLimit('referrals', 20, 60 * 60 * 1000), async (re
       };
       db.referrals.push(referral);
       await write(db);
+    } else if (referral.active === false) {
+      referral.active = true;
+      referral.deactivatedAt = null;
+      referral.ownerName = ownerName;
+      await write(db);
     }
     res.status(201).json({ ...referralView(referral), link: req.protocol + '://' + req.get('host') + '/?ref=' + encodeURIComponent(referral.code) });
   } catch (error) { next(error); }
@@ -355,9 +361,23 @@ app.post('/api/referrals', rateLimit('referrals', 20, 60 * 60 * 1000), async (re
 app.post('/api/referrals/validate', rateLimit('referral-validate', 40, 60 * 60 * 1000), async (req, res, next) => {
   try {
     const code = normalizePromoCode(req.body.code).replace(/^SHRI(?!-)/, 'SHRI-');
-    const referral = (await read()).referrals.find(item => item.code === code);
-    if (!referral) throw promotionError('Referral code not found. Check the code and try again.');
+    const referral = (await read()).referrals.find(item => item.code === code && item.active !== false);
+    if (!referral) throw promotionError('This referral link is inactive or no longer available.');
     res.json({ valid: true, code: referral.code, message: 'Referral linked. The reward unlocks after your first confirmed order.' });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/referrals/deactivate', rateLimit('referral-deactivate', 20, 60 * 60 * 1000), async (req, res, next) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+    const code = normalizePromoCode(req.body.code).replace(/^SHRI(?!-)/, 'SHRI-');
+    const db = await read();
+    const referral = db.referrals.find(item => item.code === code && item.ownerPhone === phone);
+    if (!referral) throw promotionError('Referral details do not match this phone account.');
+    referral.active = false;
+    referral.deactivatedAt = new Date().toISOString();
+    await write(db);
+    res.json({ removed: true, code: referral.code });
   } catch (error) { next(error); }
 });
 
@@ -414,8 +434,8 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
     let unlockedReward = null;
 
     if (incomingReferralCode) {
-      const referral = db.referrals.find(item => item.code === incomingReferralCode);
-      if (!referral) throw promotionError('The linked referral code is no longer valid.');
+      const referral = db.referrals.find(item => item.code === incomingReferralCode && item.active !== false);
+      if (!referral) throw promotionError('The linked referral code is inactive or no longer valid.');
       if (referral.ownerPhone === cleanCustomer.phone) throw promotionError('You cannot use your own referral link.');
       const alreadyCustomer = db.orders.some(order => normalizePhone(order.customer?.phone) === cleanCustomer.phone);
       const countedAnywhere = db.referrals.some(item => item.referredPhones.includes(cleanCustomer.phone));
