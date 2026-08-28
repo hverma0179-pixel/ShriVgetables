@@ -242,7 +242,7 @@ function ReferralGate({ initialCode, accepted, close }) {
   return <div className="referral-gate"><div className="referral-gate-card"><div className="gift-mark">🎁</div><span className="eyebrow">YOU WERE INVITED</span><h1>Enter your referral code</h1><p>Confirm the code to open Shri Vegetables. Your first confirmed order will unlock a reward for the friend who invited you.</p><form onSubmit={submit}><input autoFocus required value={code} onChange={event => setCode(event.target.value.toUpperCase())} placeholder="SHRI-XXXXXX" /><button className="primary" disabled={checking}>{checking ? 'Checking…' : <>Enter Shri Vegetables <Icon name="arrow" /></>}</button></form>{error && <div className="notice error-notice">{error}</div>}<button className="text-button" onClick={close}>Continue without referral</button></div></div>;
 }
 
-function ReferralBox({ form, selectedRewardId, onSelectReward }) {
+function ReferralBox({ form, selectedRewardId, onSelectReward, onReferralRemoved }) {
   const [profile, setProfile] = useState(() => readLocal('shri_referral_owner', null));
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -286,6 +286,8 @@ function ReferralBox({ form, selectedRewardId, onSelectReward }) {
     try {
       await api('/referrals/deactivate', { method: 'POST', body: JSON.stringify({ code: profile.code, phone: profile.phone || form.phone }) });
       if (selectedRewardId) onSelectReward(selectedRewardId);
+      if (localStorage.getItem('shri_pending_referral') === profile.code) localStorage.removeItem('shri_pending_referral');
+      onReferralRemoved?.(profile.code);
       localStorage.removeItem('shri_referral_owner');
       setProfile(null);
       setMessage('Referral link removed. Your earned rewards remain safely recorded.');
@@ -320,9 +322,10 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
   const [basketInfoOpen, setBasketInfoOpen] = useState(false);
   const [weeklyBasket, setWeeklyBasket] = useState(() => readLocal('shri_weekly_basket', { enabled: false, day: 'Saturday' }));
   const [activeOrder, setActiveOrder] = useState(() => readLocal('shri_active_order', null));
+  const [pendingReferral, setPendingReferral] = useState(() => localStorage.getItem('shri_pending_referral') || '');
+  const [referralNotice, setReferralNotice] = useState('');
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const lastBasket = readLocal('shri_last_basket', []);
-  const pendingReferral = localStorage.getItem('shri_pending_referral') || '';
 
   useEffect(() => { localStorage.setItem('shri_customer', JSON.stringify(form)); }, [form]);
   useEffect(() => { localStorage.setItem('shri_weekly_basket', JSON.stringify(weeklyBasket)); }, [weeklyBasket]);
@@ -341,6 +344,12 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
     }).catch(() => {});
   }, []);
   const quantity = (id, change) => setCart(current => current.map(item => item.id === id ? { ...item, quantity: Math.max(0, Math.min(item.stock, item.quantity + change)) } : item).filter(item => item.quantity > 0));
+  const unlinkPendingReferral = () => {
+    localStorage.removeItem('shri_pending_referral');
+    setPendingReferral('');
+    setReferralNotice('Referral unlinked. You can place this order normally.');
+    setError('');
+  };
 
   const applySavings = async () => {
     if (!couponInput.trim() && !rewardId) { setError('Enter SHRI50 or select an unlocked referral reward.'); return; }
@@ -373,7 +382,14 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
       setActiveOrder(tracking);
       if (pendingReferral) localStorage.removeItem('shri_pending_referral');
       setCart([]); setOrder(created); await reloadStore();
-    } catch (reason) { setError(reason.message); setQuote(null); }
+    } catch (reason) {
+      if (/referral code is inactive|referral link is inactive/i.test(reason.message)) {
+        localStorage.removeItem('shri_pending_referral');
+        setPendingReferral('');
+        setReferralNotice('The inactive referral was removed. Please confirm your order again.');
+      }
+      setError(reason.message); setQuote(null);
+    }
     finally { setPlacing(false); }
   };
 
@@ -389,14 +405,15 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
         <section className="basket-lines"><h2>Your items <small>{cart.reduce((sum, item) => sum + item.quantity, 0)} items</small></h2>
           {cart.map(item => <article className="basket-line" key={item.id}><ProductImage src={item.imageUrl} alt={item.name} /><div><b>{item.name}</b><span>{item.hindiName} · {money(item.price)} / {item.unit}</span></div><div className="counter"><button onClick={() => quantity(item.id, -1)}><Icon name="minus" /></button><b>{item.quantity}</b><button onClick={() => quantity(item.id, 1)}><Icon name="plus" /></button></div><strong>{money(item.price * item.quantity)}</strong><button className="remove-button" onClick={() => setCart(current => current.filter(product => product.id !== item.id))}><Icon name="trash" /></button></article>)}
           <button className="text-button" onClick={() => navigate('shop')}>← Add more products</button>
-          <ReferralBox form={form} selectedRewardId={rewardId} onSelectReward={id => setRewardId(current => current === id ? '' : id)} />
+          <ReferralBox form={form} selectedRewardId={rewardId} onSelectReward={id => setRewardId(current => current === id ? '' : id)} onReferralRemoved={code => { if (pendingReferral === code) unlinkPendingReferral(); }} />
         </section>
         <form className="delivery-card" onSubmit={placeOrder}><span className="eyebrow">DELIVERY DETAILS</span><h2>Where should we bring it?</h2>
           <div className="two-fields"><label>Full name<input required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Your name" /></label><label>Phone number<input required inputMode="tel" value={form.phone} onChange={event => setForm({ ...form, phone: event.target.value })} placeholder="+91…" /></label></div>
           <label>Complete address<textarea required value={form.address} onChange={event => setForm({ ...form, address: event.target.value })} placeholder="House, street, landmark and area" /></label>
           <div className="two-fields"><label>Delivery time<select value={form.deliverySlot} onChange={event => setForm({ ...form, deliverySlot: event.target.value })}><option>Today · 5 PM – 8 PM</option><option>Tomorrow · 8 AM – 11 AM</option><option>Tomorrow · 5 PM – 8 PM</option><option>As soon as possible</option></select></label><label>Payment<select value={form.paymentMethod} onChange={event => setForm({ ...form, paymentMethod: event.target.value })}><option>Cash on delivery</option><option>UPI at delivery</option></select></label></div>
           <label>Notes (optional)<input value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} placeholder="Gate, ripeness or delivery notes" /></label>
-          {pendingReferral && <div className="linked-referral"><Icon name="check" /><div><b>Referral linked: {pendingReferral}</b><small>Your first confirmed order unlocks your friend’s next reward.</small></div></div>}
+          {pendingReferral && <div className="linked-referral"><Icon name="check" /><div><b>Referral linked: {pendingReferral}</b><small>Your first confirmed order unlocks your friend’s next reward.</small></div><button type="button" onClick={unlinkPendingReferral}>Unlink</button></div>}
+          {referralNotice && <div className="referral-unlinked-notice"><Icon name="check" />{referralNotice}</div>}
           <div className="promotion-box"><span className="eyebrow">COUPON & REWARDS</span><div className="coupon-row"><input value={couponInput} onChange={event => setCouponInput(event.target.value.toUpperCase().replace(/\s/g, ''))} placeholder="Enter coupon code" /><button type="button" className="details-button" onClick={applySavings} disabled={saving}>{saving ? 'Checking…' : 'Apply savings'}</button></div><small>Use SHRI50 for ₹50 off. Limited to the first 1,000 phone accounts, one use each.</small>{rewardId && <p>Referral reward selected. Tap Apply savings to verify it.</p>}{quote?.discount > 0 && <div className="applied-saving"><Icon name="check" />Savings applied: {money(quote.discount)}</div>}</div>
           <div className="bill"><span>Subtotal</span><b>{money(subtotal)}</b>{shownQuote.discount > 0 && <><span>Coupon & referral savings</span><b className="discount-line">−{money(shownQuote.discount)}</b></>}<span>Delivery</span><b>{shownQuote.deliveryFee === 0 ? 'FREE · First order' : money(shownQuote.deliveryFee)}</b><strong>Total</strong><strong>{money(shownQuote.total)}</strong></div>
           {minimumRemaining > 0 && <div className="minimum-order-note">Add {money(minimumRemaining)} more to reach the ₹100 minimum order.</div>}
