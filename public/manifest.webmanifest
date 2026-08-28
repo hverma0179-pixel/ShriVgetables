@@ -13,6 +13,7 @@
   "categories": ["shopping", "food"],
   "shortcuts": [
     { "name": "Shop fresh", "short_name": "Shop", "url": "/", "icons": [{ "src": "/icons/shri-192.svg", "sizes": "192x192", "type": "image/svg+xml" }] },
+    { "name": "Track active order", "short_name": "Track order", "url": "/?page=track", "icons": [{ "src": "/icons/shri-192.svg", "sizes": "192x192", "type": "image/svg+xml" }] },
     { "name": "Admin orders", "short_name": "Admin", "url": "/?page=admin", "icons": [{ "src": "/icons/shri-192.svg", "sizes": "192x192", "type": "image/svg+xml" }] }
   ],
   "icons": [

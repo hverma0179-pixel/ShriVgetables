@@ -142,3 +142,42 @@ input,textarea,select{transition:border-color .22s,box-shadow .22s,background .2
 @keyframes messageIn{from{opacity:0;transform:translateY(5px) scale(.98)}to{opacity:1;transform:none}}
 @media(max-width:900px){.tracking-steps{grid-template-columns:repeat(3,1fr);gap:16px 0}.tracking-steps>div:nth-child(4):before{display:none}.order-detail-grid{grid-template-columns:1fr 1fr}.order-detail-grid .wide{grid-column:1/-1}}
 @media(max-width:760px){.tracking-steps{grid-template-columns:1fr}.tracking-steps>div:nth-child(4):before{display:block}.order-chat{padding:13px 10px}.chat-heading{display:block}.chat-heading>small{display:block;margin:7px 0 0 31px}.order-chat form{grid-template-columns:1fr}.order-chat form .primary{width:100%}.chat-messages article{width:90%}.order-detail-grid{grid-template-columns:1fr 1fr}.admin-status-control>div:last-child{grid-template-columns:1fr 1fr}.admin-order:has(.admin-order-more){grid-column:auto}}
+/* Mobile browser and installed-app order controls */
+@media(max-width:760px){
+  html,body,#root{max-width:100%;overflow-x:hidden}
+  body{padding-bottom:env(safe-area-inset-bottom)}
+  header{height:calc(68px + env(safe-area-inset-top));padding-top:env(safe-area-inset-top)}
+  nav>button,.primary,.soft-button,.notify-button,.text-button,.more-order-button,.admin-status-control button{min-height:44px;touch-action:manipulation}
+  .cart-page,.admin-page,.track-page{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:calc(84px + env(safe-area-inset-bottom))}
+  .tracking-head h1{font-size:clamp(34px,11vw,46px)}
+  .tracking-head .soft-button{width:100%}
+  .tracking-card{border-radius:19px;padding:14px 10px}
+  .tracking-current{padding:14px 12px}.tracking-current h2{font-size:24px}
+  .tracking-steps{padding:2px 8px}.tracking-steps>div{min-height:50px}.tracking-steps b{font-size:12px}.tracking-steps small{font-size:9px}
+  .tracking-summary>div{padding:11px}.tracked-items span{font-size:11px}
+  .order-chat{margin-top:16px;border-radius:15px;padding:13px 9px}
+  .chat-messages{max-height:min(42vh,330px);overscroll-behavior:contain;padding:7px 2px 12px}
+  .chat-messages article{width:92%;padding:11px 12px}.chat-messages article span{font-size:13px;line-height:1.45}
+  .order-chat form{position:sticky;bottom:0;z-index:2;grid-template-columns:minmax(0,1fr) auto;align-items:center;padding-top:8px;background:#f5f7f2}
+  .order-chat input{min-height:46px;border-radius:14px;padding:11px 12px;font-size:16px}
+  .order-chat form .primary{width:auto;min-width:76px;min-height:46px;padding:10px 13px;border-radius:14px}
+  .admin-heading h1{font-size:clamp(35px,11vw,48px);line-height:1.05}
+  .admin-actions{display:grid;grid-template-columns:1fr 1fr}.admin-actions>*{width:100%;padding-left:10px;padding-right:10px}
+  .admin-section{margin-top:38px}.admin-section-title{align-items:flex-start;gap:10px}.admin-section-title h2{font-size:27px}
+  .admin-order{padding:15px 12px;border-radius:15px}.admin-order.unread{border-left-width:4px}
+  .order-top p{overflow-wrap:anywhere}.order-meta span,.order-items span{font-size:11px;padding:7px 8px}
+  .admin-status-control{padding:12px 9px}.admin-status-control>div:last-child{gap:7px}.admin-status-control button{font-size:10px;padding:8px 6px}
+  .more-order-button{width:100%;justify-content:flex-start;text-align:left;padding:10px 11px}.more-order-button b{margin-left:auto}
+  .admin-order-more{padding:10px 8px;margin-left:-3px;margin-right:-3px}
+  .order-detail-grid>div{padding:10px 9px}.order-detail-grid b{font-size:12px}
+  .admin-chat .chat-heading>small,.customer-chat .chat-heading>small{margin-left:0}
+  #pwa-install{left:max(12px,env(safe-area-inset-left));bottom:calc(12px + env(safe-area-inset-bottom));min-height:44px}
+  #pwa-help{left:max(12px,env(safe-area-inset-left));bottom:calc(64px + env(safe-area-inset-bottom))}
+}
+@media(max-width:420px){
+  .admin-actions{grid-template-columns:1fr}
+  .admin-stats{gap:8px}.admin-stats>div{padding:12px 10px}.admin-stats b{font-size:23px}
+  .order-detail-grid{grid-template-columns:1fr}.order-detail-grid .wide{grid-column:1}
+  .admin-status-control>div:last-child{grid-template-columns:1fr 1fr}
+  .order-chat form .primary{min-width:68px;padding-left:10px;padding-right:10px}
+}
