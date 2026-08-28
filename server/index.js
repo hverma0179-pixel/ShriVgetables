@@ -164,7 +164,7 @@ const rateLimit = (name, max, windowMs) => (req, res, next) => {
 const normalizePhone = value => String(value || '').replace(/\D/g, '').slice(-10);
 const normalizePromoCode = value => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 const referralRewardAmounts = [25, 50, 75];
-const orderStatuses = ['Confirmed', 'Packing', 'Out for delivery', 'Delivered'];
+const orderStatuses = ['Pending approval', 'Confirmed', 'Packing', 'Ready for delivery', 'Out for delivery', 'Delivered'];
 const minimumOrderAmount = 100;
 const standardDeliveryFee = 20;
 const promotionError = message => Object.assign(new Error(message), { status: 400 });
@@ -231,7 +231,8 @@ const customerOrderView = order => ({
   deliveryFee: order.deliveryFee || 0,
   total: order.total,
   status: order.status,
-  statusHistory: order.statusHistory || [{ status: order.status || 'Confirmed', at: order.createdAt }],
+  statusHistory: order.statusHistory || [{ status: order.status || 'Pending approval', at: order.createdAt }],
+  chatMessages: (order.chatMessages || []).map(message => ({ id: message.id, sender: message.sender, text: message.text, createdAt: message.createdAt })),
   deliverySlot: order.customer?.deliverySlot,
   createdAt: order.createdAt
 });
@@ -482,8 +483,9 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
         enabled: Boolean(weeklyBasket.enabled),
         day: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].includes(weeklyBasket.day) ? weeklyBasket.day : 'Saturday'
       },
-      status: 'Confirmed',
-      statusHistory: [{ status: 'Confirmed', at: new Date().toISOString() }],
+      status: 'Pending approval',
+      statusHistory: [{ status: 'Pending approval', at: new Date().toISOString() }],
+      chatMessages: [],
       createdAt: new Date().toISOString(),
       adminRead: false,
       adminReadAt: null,
@@ -513,6 +515,39 @@ app.post('/api/orders/track', rateLimit('order-track', 80, 10 * 60 * 1000), asyn
     res.json(customerOrderView(order));
   } catch (error) { next(error); }
 });
+app.post('/api/orders/chat', rateLimit('customer-order-chat', 50, 10 * 60 * 1000), async (req, res, next) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+    const orderId = String(req.body.orderId || '').trim().toUpperCase();
+    const text = String(req.body.message || '').trim().slice(0, 500);
+    if (phone.length !== 10 || !orderId || !text) throw promotionError('Enter a message for this order.');
+    const db = await read();
+    const order = db.orders.find(item => item.id === orderId && normalizePhone(item.customer?.phone) === phone);
+    if (!order) throw promotionError('Order details did not match.');
+    order.chatMessages ||= [];
+    const message = { id: crypto.randomUUID(), sender: 'customer', text, createdAt: new Date().toISOString() };
+    order.chatMessages.push(message);
+    order.adminRead = false;
+    await write(db);
+    res.status(201).json(message);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/orders/:id/chat', admin, async (req, res, next) => {
+  try {
+    const text = String(req.body.message || '').trim().slice(0, 500);
+    if (!text) throw promotionError('Enter a message for the customer.');
+    const db = await read();
+    const order = db.orders.find(item => item.id === req.params.id);
+    if (!order) return res.sendStatus(404);
+    order.chatMessages ||= [];
+    const message = { id: crypto.randomUUID(), sender: 'admin', text, createdAt: new Date().toISOString() };
+    order.chatMessages.push(message);
+    await write(db);
+    res.status(201).json(message);
+  } catch (error) { next(error); }
+});
+
 app.patch('/api/orders/:id/status', admin, async (req, res, next) => {
   try {
     const nextStatus = String(req.body.status || '').trim();
@@ -525,7 +560,7 @@ app.patch('/api/orders/:id/status', admin, async (req, res, next) => {
     if (nextIndex < currentIndex || nextIndex > currentIndex + 1) throw promotionError('Update the order one step at a time.');
     if (nextStatus !== order.status) {
       order.status = nextStatus;
-      order.statusHistory ||= [{ status: 'Confirmed', at: order.createdAt }];
+      order.statusHistory ||= [{ status: order.status || 'Pending approval', at: order.createdAt }];
       order.statusHistory.push({ status: nextStatus, at: new Date().toISOString() });
     }
     order.adminRead = true;

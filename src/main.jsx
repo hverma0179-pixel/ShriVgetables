@@ -5,7 +5,7 @@ import './style.css';
 const API = '/api';
 const fallbackImage = '/products/vegetables/tomato.webp';
 const money = value => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value || 0);
-const ORDER_STAGES = ['Confirmed', 'Packing', 'Out for delivery', 'Delivered'];
+const ORDER_STAGES = ['Pending approval', 'Confirmed', 'Packing', 'Ready for delivery', 'Out for delivery', 'Delivered'];
 const readLocal = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 };
@@ -393,7 +393,7 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
     finally { setPlacing(false); }
   };
 
-  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER CONFIRMED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is confirmed for <b>{order.customer.deliverySlot}</b>. The store has been notified.</p><div className="success-total"><span>{order.discount > 0 ? 'Total after savings' : 'Total'}</span><strong>{money(order.total)}</strong></div>{order.discount > 0 && <p className="saving-confirmed">You saved {money(order.discount)} on this order.</p>}{order.deliveryFee === 0 && <p className="saving-confirmed">Your first delivery is free.</p>}{order.weeklyBasket?.enabled && <p className="weekly-confirmed">Weekly basket preference saved for every {order.weeklyBasket.day}.</p>}<div className="success-actions"><button className="primary" onClick={() => navigate('track')}>Track order</button><button className="soft-button" onClick={() => navigate('shop')}>Continue shopping</button></div></main>;
+  if (order) return <main className="order-success"><div className="success-mark"><Icon name="check" /></div><span className="eyebrow">ORDER PLACED</span><h1>Thank you, {order.customer.name}.</h1><p>Your order <b>{order.id}</b> is waiting for store approval. You will see confirmation, preparation and delivery updates in Track Order.</p><div className="success-total"><span>{order.discount > 0 ? 'Total after savings' : 'Total'}</span><strong>{money(order.total)}</strong></div>{order.discount > 0 && <p className="saving-confirmed">You saved {money(order.discount)} on this order.</p>}{order.deliveryFee === 0 && <p className="saving-confirmed">Your first delivery is free.</p>}{order.weeklyBasket?.enabled && <p className="weekly-confirmed">Weekly basket preference saved for every {order.weeklyBasket.day}.</p>}<div className="success-actions"><button className="primary" onClick={() => navigate('track')}>Track order & chat</button><button className="soft-button" onClick={() => navigate('shop')}>Continue shopping</button></div></main>;
 
   const shownQuote = quote || baseQuote || { subtotal, discount: 0, deliveryFee: 0, firstDeliveryFree: true, total: subtotal };
   const minimumRemaining = Math.max(0, 100 - subtotal);
@@ -431,6 +431,9 @@ function TrackOrder({ navigate }) {
   const [loading, setLoading] = useState(Boolean(saved));
   const [error, setError] = useState('');
   const [lastChecked, setLastChecked] = useState(null);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState('');
   const previousStatus = useRef(saved?.status || '');
 
   const refresh = useCallback(async () => {
@@ -455,9 +458,21 @@ function TrackOrder({ navigate }) {
 
   useEffect(() => {
     refresh();
-    const timer = setInterval(refresh, 10000);
+    const timer = setInterval(refresh, 7000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  const sendCustomerChat = async event => {
+    event.preventDefault();
+    if (!chatDraft.trim() || chatSending || !saved) return;
+    setChatSending(true); setChatError('');
+    try {
+      await api('/orders/chat', { method: 'POST', body: JSON.stringify({ orderId: saved.id, phone: saved.phone, message: chatDraft }) });
+      setChatDraft('');
+      await refresh();
+    } catch (reason) { setChatError(reason.message); }
+    finally { setChatSending(false); }
+  };
 
   if (!saved) return <main className="track-page"><div className="empty-state"><span>📦</span><h3>No active order</h3><p>Track Order appears here automatically after you place an order.</p><button className="primary" onClick={() => navigate('cart')}>Open basket</button></div></main>;
   if (loading && !order) return <main className="track-page"><div className="tracking-loader"><span className="spinner" />Loading your live order…</div></main>;
@@ -465,7 +480,7 @@ function TrackOrder({ navigate }) {
 
   const activeIndex = Math.max(0, ORDER_STAGES.indexOf(order.status));
   return <main className="track-page">
-    <div className="tracking-head"><div><span className="eyebrow">LIVE ORDER UPDATE</span><h1>Track your fresh order</h1><p>Order <b>{order.id}</b> · Updates automatically every 10 seconds</p></div><button className="soft-button" onClick={refresh}>Refresh now</button></div>
+    <div className="tracking-head"><div><span className="eyebrow">LIVE ORDER UPDATE</span><h1>Track your fresh order</h1><p>Order <b>{order.id}</b> · Status and chat update automatically</p></div><button className="soft-button" onClick={refresh}>Refresh now</button></div>
     <section className="tracking-card">
       <div className="tracking-current"><span className="live-dot" /><div><small>CURRENT STATUS</small><h2>{order.status}</h2></div></div>
       <div className="tracking-steps">{ORDER_STAGES.map((stage, index) => {
@@ -474,6 +489,7 @@ function TrackOrder({ navigate }) {
       })}</div>
       <div className="tracking-summary"><div><span>Delivery slot</span><b>{order.deliverySlot || 'As soon as possible'}</b></div><div><span>Items</span><b>{order.items.reduce((sum, item) => sum + item.quantity, 0)}</b></div><div><span>Total</span><b>{money(order.total)}</b></div></div>
       <div className="tracked-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
+      <section className="order-chat customer-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with Shri Vegetables</b><small>Ask about confirmation, packing or delivery.</small></div></div><small>IN-APP CHAT</small></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet. Send us a question about your order.</p> : order.chatMessages.map(message => <article className={message.sender === 'customer' ? 'customer-message' : 'admin-message'} key={message.id}><b>{message.sender === 'customer' ? 'You' : 'Shri Vegetables'}</b><span>{message.text}</span><small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={sendCustomerChat}><input value={chatDraft} onChange={event => setChatDraft(event.target.value)} maxLength="500" placeholder="Type a message about your order…" /><button className="primary" disabled={chatSending || !chatDraft.trim()}>{chatSending ? 'Sending…' : 'Send'}</button></form>{chatError && <div className="notice error-notice">{chatError}</div>}</section>
       {order.status === 'Delivered' && <div className="delivered-message"><Icon name="check" /><div><b>Order delivered</b><small>This order is safely saved in your order history.</small></div></div>}
       {lastChecked && <p className="last-checked">Last checked at {lastChecked.toLocaleTimeString('en-IN')}</p>}
     </section>
@@ -511,6 +527,9 @@ function Admin({ reloadStore }) {
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
   const [alerts, setAlerts] = useState('');
+  const [expandedOrders, setExpandedOrders] = useState([]);
+  const [chatDrafts, setChatDrafts] = useState({});
+  const [chatSending, setChatSending] = useState('');
   const knownOrders = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -553,6 +572,22 @@ function Admin({ reloadStore }) {
       await refresh();
     } catch (reason) { setError(reason.message); }
   };
+  const toggleOrderDetails = order => {
+    setExpandedOrders(current => current.includes(order.id) ? current.filter(id => id !== order.id) : [...current, order.id]);
+    if (!order.adminRead) api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh).catch(reason => setError(reason.message));
+  };
+  const sendAdminChat = async (event, order) => {
+    event.preventDefault();
+    const message = chatDrafts[order.id]?.trim();
+    if (!message || chatSending) return;
+    setChatSending(order.id); setError('');
+    try {
+      await api('/orders/' + order.id + '/chat', { method: 'POST', body: JSON.stringify({ message }) });
+      setChatDrafts(current => ({ ...current, [order.id]: '' }));
+      await refresh();
+    } catch (reason) { setError(reason.message); }
+    finally { setChatSending(''); }
+  };
   const enableAlerts = async () => {
     setAlerts(''); setError('');
     try {
@@ -584,7 +619,9 @@ function Admin({ reloadStore }) {
         <div className="order-top"><div><span className="order-id">{order.id}</span>{!order.adminRead && <b className="new-badge">NEW</b>}<h3>{order.customer.name}</h3><p>{order.customer.phone} · {order.customer.address}</p></div><div><strong>{money(order.total)}</strong><span>{new Date(order.createdAt).toLocaleString('en-IN')}</span></div></div>
         <div className="order-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
         <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🚚 Delivery {order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</span><span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.weeklyBasket?.enabled && <span>📅 Weekly · {order.weeklyBasket.day}</span>}{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
-        <div className="admin-status-control"><div><small>CUSTOMER LIVE STATUS</small><b>{order.status || 'Confirmed'}</b></div><div>{ORDER_STAGES.map((status, index) => { const current = Math.max(0, ORDER_STAGES.indexOf(order.status || 'Confirmed')); return <button key={status} disabled={index !== current + 1} className={index <= current ? 'complete' : ''} onClick={() => updateOrderStatus(order, status)}>{index < current ? '✓ ' : ''}{status}</button>; })}</div></div>
+        <div className="admin-status-control"><div><small>CUSTOMER LIVE STATUS</small><b>{order.status || 'Pending approval'}</b></div><div>{ORDER_STAGES.map((status, index) => { const current = Math.max(0, ORDER_STAGES.indexOf(order.status || 'Pending approval')); return <button key={status} disabled={index !== current + 1} className={index <= current ? 'complete' : ''} onClick={() => updateOrderStatus(order, status)}>{index < current ? '✓ ' : ''}{status}</button>; })}</div></div>
+        <button type="button" className="more-order-button" onClick={() => toggleOrderDetails(order)}><span>{expandedOrders.includes(order.id) ? '−' : '+'}</span>{expandedOrders.includes(order.id) ? 'Hide order info & chat' : 'More order info & chat'}{order.chatMessages?.length > 0 && <b>{order.chatMessages.length} messages</b>}</button>
+        {expandedOrders.includes(order.id) && <section className="admin-order-more"><div className="order-detail-grid"><div><small>FULL NAME</small><b>{order.customer.name}</b></div><div><small>PHONE</small><b>{order.customer.phone}</b></div><div className="wide"><small>DELIVERY ADDRESS</small><b>{order.customer.address}</b></div><div><small>SUBTOTAL</small><b>{money(order.subtotal)}</b></div><div><small>DISCOUNT</small><b>{money(order.discount || 0)}</b></div><div><small>DELIVERY FEE</small><b>{order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</b></div><div><small>FINAL TOTAL</small><b>{money(order.total)}</b></div>{order.referredBy && <div className="wide"><small>REFERRED BY</small><b>{order.referredBy}</b></div>}{order.customer.notes && <div className="wide"><small>CUSTOMER NOTE</small><b>{order.customer.notes}</b></div>}</div><div className="order-chat admin-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with {order.customer.name}</b><small>Messages appear in the customer’s Track Order screen.</small></div></div><small>ORDER CHAT</small></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet.</p> : order.chatMessages.map(message => <article className={message.sender === 'admin' ? 'admin-message' : 'customer-message'} key={message.id}><b>{message.sender === 'admin' ? 'You' : order.customer.name}</b><span>{message.text}</span><small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={event => sendAdminChat(event, order)}><input value={chatDrafts[order.id] || ''} onChange={event => setChatDrafts(current => ({ ...current, [order.id]: event.target.value }))} maxLength="500" placeholder="Type an update for the customer…" /><button className="primary" disabled={chatSending === order.id || !(chatDrafts[order.id] || '').trim()}>{chatSending === order.id ? 'Sending…' : 'Send'}</button></form></div></section>}
         {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark notification read</button>}
       </article>)}</div>}
     </section>
