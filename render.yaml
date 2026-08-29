@@ -32,5 +32,9 @@ services:
         sync: false
       - key: WHATSAPP_RECIPIENT_PHONE
         sync: false
-      - key: STORE_PHONE
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
         sync: false

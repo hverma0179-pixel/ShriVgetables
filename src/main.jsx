@@ -105,6 +105,198 @@ function VoiceRecorderButton({ onSend, onError, disabled = false }) {
 
   return <button type="button" className={'voice-message-button ' + (recording ? 'recording' : '')} onClick={start} disabled={disabled} aria-label={recording ? 'Stop and send voice message' : 'Record voice message'}>{recording ? `■ ${seconds}s` : '🎙 Voice'}</button>;
 }
+
+function InAppCall({ role, orderId, accessToken = '', otherName, onError }) {
+  const [call, setCall] = useState(null);
+  const [connection, setConnection] = useState('idle');
+  const [muted, setMuted] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const peer = useRef(null);
+  const localStream = useRef(null);
+  const remoteAudio = useRef(null);
+  const processedSignals = useRef(new Set());
+  const pendingCandidates = useRef([]);
+  const mounted = useRef(true);
+  const callId = useRef('');
+  const latestCall = useRef(null);
+
+  const request = useCallback(async (action, signal) => {
+    const path = role === 'admin' ? '/orders/' + orderId + '/call' : '/orders/call';
+    const body = role === 'admin' ? { action, signal } : { orderId, accessToken, action, signal };
+    return api(path, { method: 'POST', body: JSON.stringify(body) });
+  }, [role, orderId, accessToken]);
+
+  const closeMedia = useCallback(() => {
+    peer.current?.close();
+    peer.current = null;
+    localStream.current?.getTracks().forEach(track => track.stop());
+    localStream.current = null;
+    if (remoteAudio.current) remoteAudio.current.srcObject = null;
+    pendingCandidates.current = [];
+    if (mounted.current) {
+      setConnection('idle');
+      setMuted(false);
+    }
+  }, []);
+
+  const preparePeer = useCallback(async iceServers => {
+    if (peer.current) return peer.current;
+    if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
+      throw new Error('In-app calling is not supported on this browser.');
+    }
+    setConnection('connecting');
+    localStream.current = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    const pc = new RTCPeerConnection({ iceServers: iceServers || [] });
+    localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+    pc.ontrack = event => {
+      if (remoteAudio.current) remoteAudio.current.srcObject = event.streams[0];
+    };
+    pc.onicecandidate = event => {
+      if (event.candidate) request('signal', { type: 'candidate', data: event.candidate.toJSON() }).catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (!mounted.current) return;
+      if (pc.connectionState === 'connected') setConnection('connected');
+      else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) setConnection('reconnecting');
+    };
+    peer.current = pc;
+    return pc;
+  }, [request]);
+
+  const flushCandidates = useCallback(async () => {
+    if (!peer.current?.remoteDescription) return;
+    const queued = pendingCandidates.current.splice(0);
+    for (const candidate of queued) {
+      try { await peer.current.addIceCandidate(candidate); } catch {}
+    }
+  }, []);
+
+  const processCall = useCallback(async next => {
+    if (!mounted.current) return;
+    latestCall.current = next || null;
+    setCall(next || null);
+    if (!next) return;
+    if (callId.current !== next.id) {
+      callId.current = next.id;
+      processedSignals.current.clear();
+    }
+    if (['ended', 'rejected', 'missed'].includes(next.status)) {
+      closeMedia();
+      return;
+    }
+    for (const signal of next.signals || []) {
+      if (signal.to !== role || processedSignals.current.has(signal.id)) continue;
+      processedSignals.current.add(signal.id);
+      try {
+        if (signal.type === 'candidate') {
+          if (peer.current?.remoteDescription) await peer.current.addIceCandidate(signal.data);
+          else pendingCandidates.current.push(signal.data);
+        } else if (signal.type === 'answer' && role === next.caller && peer.current) {
+          await peer.current.setRemoteDescription(signal.data);
+          await flushCandidates();
+        }
+      } catch {}
+    }
+    if (next.status === 'active' && connection !== 'connected') {
+      setConnection(current => current === 'idle' ? 'connecting' : current);
+    }
+  }, [closeMedia, flushCandidates, role]);
+
+  const startCall = async () => {
+    try {
+      const started = await request('initiate');
+      setCall(started.call);
+      const pc = await preparePeer(started.iceServers);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const response = await request('signal', { type: 'offer', data: pc.localDescription });
+      await processCall(response.call);
+    } catch (error) {
+      request('end').catch(() => {});
+      closeMedia();
+      onError?.(error?.name === 'NotAllowedError' ? 'Allow microphone access to start the private call.' : error.message || 'Could not start the call.');
+    }
+  };
+
+  const acceptCall = async () => {
+    try {
+      const response = await request('accept');
+      const pc = await preparePeer(response.iceServers);
+      const offerSignal = [...(response.call.signals || [])].reverse().find(signal => signal.to === role && signal.type === 'offer');
+      if (!offerSignal) throw new Error('The call offer is still connecting. Tap answer again.');
+      processedSignals.current.add(offerSignal.id);
+      await pc.setRemoteDescription(offerSignal.data);
+      await flushCandidates();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const answered = await request('signal', { type: 'answer', data: pc.localDescription });
+      await processCall(answered.call);
+    } catch (error) {
+      request('reject').catch(() => {});
+      closeMedia();
+      onError?.(error?.name === 'NotAllowedError' ? 'Allow microphone access to answer the private call.' : error.message || 'Could not answer the call.');
+    }
+  };
+
+  const finish = async action => {
+    try {
+      const response = await request(action);
+      setCall(response.call);
+    } catch {}
+    closeMedia();
+  };
+  const toggleMute = () => {
+    const next = !muted;
+    localStream.current?.getAudioTracks().forEach(track => { track.enabled = !next; });
+    setMuted(next);
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const response = await request('state');
+        if (!stopped) await processCall(response.call);
+      } catch {}
+    };
+    poll();
+    const timer = setInterval(poll, 1400);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      if (['ringing', 'active'].includes(latestCall.current?.status)) request('end').catch(() => {});
+      mounted.current = false;
+      closeMedia();
+    };
+  }, [request, processCall, closeMedia]);
+
+  useEffect(() => {
+    if (connection !== 'connected') { setSeconds(0); return; }
+    const timer = setInterval(() => setSeconds(value => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [connection]);
+
+  const incoming = call?.status === 'ringing' && call.caller !== role;
+  const outgoing = call?.status === 'ringing' && call.caller === role;
+  const active = call?.status === 'active';
+  const time = String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
+
+  return <section className={'in-app-call ' + (incoming ? 'is-ringing' : '')} aria-live="polite">
+    <audio ref={remoteAudio} autoPlay playsInline />
+    <div className="call-identity"><span className="call-avatar">{incoming ? '↙' : active ? '◉' : '☎'}</span><div><small>PRIVATE IN-APP AUDIO</small><b>{otherName}</b><span>No phone number or SIM is used</span></div></div>
+    <div className="call-state"><i /><i /><i /><i /><strong>{connection === 'connected' ? 'Connected · ' + time : incoming ? 'Incoming call…' : outgoing ? 'Calling…' : active ? 'Connecting securely…' : 'Available for this order'}</strong></div>
+    <div className="call-actions">
+      {!incoming && !outgoing && !active && <button type="button" className="call-start" onClick={startCall}>☎ Start in-app call</button>}
+      {incoming && <><button type="button" className="call-answer" onClick={acceptCall}>✓ Answer</button><button type="button" className="call-decline" onClick={() => finish('reject')}>Decline</button></>}
+      {outgoing && <button type="button" className="call-decline" onClick={() => finish('end')}>Cancel call</button>}
+      {active && <><button type="button" className={muted ? 'call-muted' : ''} onClick={toggleMute}>{muted ? 'Unmute' : 'Mute'}</button><button type="button" className="call-decline" onClick={() => finish('end')}>End call</button></>}
+    </div>
+  </section>;
+}
+
 function App() {
   const incomingReferral = new URLSearchParams(location.search).get('ref') || '';
   const getPage = () => new URLSearchParams(location.search).get('page') || 'shop';
@@ -117,6 +309,8 @@ function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [referralGate, setReferralGate] = useState(incomingReferral);
   const [toast, setToast] = useState('');
+  const [customerIncomingCall, setCustomerIncomingCall] = useState(null);
+  const customerCallNotice = useRef('');
 
   const loadProducts = useCallback(async () => {
     try { setProducts(await api('/products')); }
@@ -137,6 +331,36 @@ function App() {
     const timer = setTimeout(() => setToast(''), 3200);
     return () => clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    if (page === 'track' || page === 'admin') {
+      setCustomerIncomingCall(null);
+      return;
+    }
+    let stopped = false;
+    const checkIncomingCall = async () => {
+      const activeOrder = readLocal('shri_active_order', null);
+      if (!activeOrder?.id || !activeOrder?.callAccessToken) {
+        if (!stopped) setCustomerIncomingCall(null);
+        return;
+      }
+      try {
+        const response = await api('/orders/call', { method: 'POST', body: JSON.stringify({ orderId: activeOrder.id, accessToken: activeOrder.callAccessToken, action: 'state' }) });
+        const incoming = response.call?.status === 'ringing' && response.call.caller === 'admin' ? response.call : null;
+        if (!stopped) setCustomerIncomingCall(incoming);
+        if (incoming && customerCallNotice.current !== incoming.id) {
+          customerCallNotice.current = incoming.id;
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('Shri Vegetables is calling', { body: 'Open your active order to answer the private in-app call.', icon: '/icons/shri-192.svg' });
+          }
+        }
+      } catch {
+        if (!stopped) setCustomerIncomingCall(null);
+      }
+    };
+    checkIncomingCall();
+    const timer = setInterval(checkIncomingCall, 1800);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [page]);
 
   const navigate = next => {
     setPage(next);
@@ -170,6 +394,7 @@ function App() {
 
   return <>
     <Header page={page} navigate={navigate} cartCount={cartCount} openAi={() => setAiOpen(true)} />
+    {customerIncomingCall && page !== 'admin' && page !== 'track' && <aside className="global-incoming-call customer-incoming-call" role="alert"><span className="incoming-call-ring">☎</span><div><small>INCOMING PRIVATE CALL</small><b>Shri Vegetables</b><span>Order {customerIncomingCall.orderId}</span></div><button type="button" onClick={() => navigate('track')}>Open & answer</button></aside>}
     {page === 'admin'
       ? <Admin reloadStore={loadProducts} />
       : page === 'track'
@@ -189,7 +414,7 @@ function Header({ page, navigate, cartCount, openAi }) {
   return <header>
     <button className="brand" onClick={() => navigate('shop')} aria-label="Shri Vegetables home"><span>श्री</span><i>VEGETABLES</i></button>
     <nav aria-label="Main navigation">
-      <button className={page === 'shop' ? 'nav-active' : ''} onClick={() => navigate('shop')}>Shop</button>
+      <button className={page === 'shop' ? 'nav-active' : ''} onClick={() => navigate('shop')}><span className="nav-shop-icon">⌂</span><span>Shop</span></button>
       <button className="ai-nav" onClick={openAi}><Icon name="sparkle" /><span>AI helper</span></button>
       <button className="cart-nav" onClick={() => navigate('cart')}><Icon name="basket" /><span>Basket</span>{cartCount > 0 && <b>{cartCount}</b>}</button>
     </nav>
@@ -402,7 +627,7 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
     if (!activeOrder?.id || !activeOrder?.phone) return;
     api('/orders/track', { method: 'POST', body: JSON.stringify({ orderId: activeOrder.id, phone: activeOrder.phone }) }).then(latest => {
       if (latest.status === 'Delivered') { localStorage.removeItem('shri_active_order'); setActiveOrder(null); }
-      else { const saved = { id: latest.id, phone: activeOrder.phone, status: latest.status }; localStorage.setItem('shri_active_order', JSON.stringify(saved)); setActiveOrder(saved); }
+      else { const saved = { id: latest.id, phone: activeOrder.phone, status: latest.status, callAccessToken: latest.callAccessToken || activeOrder.callAccessToken }; localStorage.setItem('shri_active_order', JSON.stringify(saved)); setActiveOrder(saved); }
     }).catch(() => {});
   }, []);
   const quantity = (id, change) => setCart(current => current.map(item => item.id === id ? { ...item, quantity: Math.max(0, Math.min(item.stock, item.quantity + change)) } : item).filter(item => item.quantity > 0));
@@ -439,7 +664,7 @@ function Cart({ cart, setCart, navigate, reloadStore }) {
         weeklyBasket
       }) });
       localStorage.setItem('shri_last_basket', JSON.stringify(cart));
-      const tracking = { id: created.id, phone: form.phone.replace(/\D/g, '').slice(-10), status: created.status };
+      const tracking = { id: created.id, phone: form.phone.replace(/\D/g, '').slice(-10), status: created.status, callAccessToken: created.callAccessToken };
       localStorage.setItem('shri_active_order', JSON.stringify(tracking));
       setActiveOrder(tracking);
       if (pendingReferral) localStorage.removeItem('shri_pending_referral');
@@ -496,7 +721,6 @@ function TrackOrder({ navigate }) {
   const [chatDraft, setChatDraft] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [chatError, setChatError] = useState('');
-  const [storePhone, setStorePhone] = useState('');
   const previousStatus = useRef(saved?.status || '');
 
   const refresh = useCallback(async () => {
@@ -513,7 +737,7 @@ function TrackOrder({ navigate }) {
         if (!history.some(item => item.id === latest.id)) localStorage.setItem('shri_order_history', JSON.stringify([latest, ...history].slice(0, 20)));
         localStorage.removeItem('shri_active_order');
       } else {
-        localStorage.setItem('shri_active_order', JSON.stringify({ id: latest.id, phone: saved.phone, status: latest.status }));
+        localStorage.setItem('shri_active_order', JSON.stringify({ id: latest.id, phone: saved.phone, status: latest.status, callAccessToken: latest.callAccessToken || saved.callAccessToken }));
       }
     } catch (reason) { setError(reason.message); }
     finally { setLoading(false); }
@@ -524,9 +748,6 @@ function TrackOrder({ navigate }) {
     const timer = setInterval(refresh, 7000);
     return () => clearInterval(timer);
   }, [refresh]);
-  useEffect(() => {
-    api('/store/contact').then(data => setStorePhone(data.phone || '')).catch(() => {});
-  }, []);
 
   const sendCustomerChat = async event => {
     event.preventDefault();
@@ -564,7 +785,7 @@ function TrackOrder({ navigate }) {
       })}</div>
       <div className="tracking-summary"><div><span>Delivery slot</span><b>{order.deliverySlot || 'As soon as possible'}</b></div><div><span>Items</span><b>{order.items.reduce((sum, item) => sum + item.quantity, 0)}</b></div><div><span>Total</span><b>{money(order.total)}</b></div></div>
       <div className="tracked-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
-      <section className="order-chat customer-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with Shri Vegetables</b><small>Ask about confirmation, packing or delivery.</small></div></div><div className="chat-tools">{storePhone ? <a className="chat-call-button" href={'tel:' + storePhone}>📞 Call store</a> : <span className="chat-call-disabled" title="Add STORE_PHONE in Render">📞 Call store</span>}<small>IN-APP CHAT</small></div></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet. Send us a question about your order.</p> : order.chatMessages.map(message => <article className={message.sender === 'customer' ? 'customer-message' : 'admin-message'} key={message.id}><b>{message.sender === 'customer' ? 'You' : 'Shri Vegetables'}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={sendCustomerChat}><input value={chatDraft} onChange={event => setChatDraft(event.target.value)} maxLength="500" placeholder="Type a message about your order…" /><VoiceRecorderButton onSend={sendCustomerVoice} onError={setChatError} disabled={chatSending} /><button className="primary" disabled={chatSending || !chatDraft.trim()}>{chatSending ? 'Sending…' : 'Send'}</button></form>{chatError && <div className="notice error-notice">{chatError}</div>}</section>
+      <section className="order-chat customer-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with Shri Vegetables</b><small>Ask about confirmation, packing or delivery.</small></div></div><div className="chat-tools"><small>SECURE ORDER CHAT</small></div></div><InAppCall role="customer" orderId={saved.id} accessToken={saved.callAccessToken} otherName="Shri Vegetables" onError={setChatError} /><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet. Send us a question about your order.</p> : order.chatMessages.map(message => <article className={message.sender === 'customer' ? 'customer-message' : 'admin-message'} key={message.id}><b>{message.sender === 'customer' ? 'You' : 'Shri Vegetables'}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={sendCustomerChat}><input value={chatDraft} onChange={event => setChatDraft(event.target.value)} maxLength="500" placeholder="Type a message about your order…" /><VoiceRecorderButton onSend={sendCustomerVoice} onError={setChatError} disabled={chatSending} /><button className="primary" disabled={chatSending || !chatDraft.trim()}>{chatSending ? 'Sending…' : 'Send'}</button></form>{chatError && <div className="notice error-notice">{chatError}</div>}</section>
       {order.status === 'Delivered' && <div className="delivered-message"><Icon name="check" /><div><b>Order delivered</b><small>This order is safely saved in your order history.</small></div></div>}
       {lastChecked && <p className="last-checked">Last checked at {lastChecked.toLocaleTimeString('en-IN')}</p>}
     </section>
@@ -603,6 +824,7 @@ function Admin({ reloadStore }) {
   const [adding, setAdding] = useState(false);
   const [alerts, setAlerts] = useState('');
   const [expandedOrders, setExpandedOrders] = useState([]);
+  const [incomingCalls, setIncomingCalls] = useState([]);
   const [chatDrafts, setChatDrafts] = useState({});
   const [chatSending, setChatSending] = useState('');
   const knownOrders = useRef(null);
@@ -628,6 +850,16 @@ function Admin({ reloadStore }) {
     const timer = setInterval(refresh, 12000);
     return () => clearInterval(timer);
   }, [authenticated, refresh]);
+  useEffect(() => {
+    if (!authenticated) return;
+    let stopped = false;
+    const checkCalls = () => api('/admin/calls/incoming').then(data => {
+      if (!stopped) setIncomingCalls(data);
+    }).catch(() => {});
+    checkCalls();
+    const timer = setInterval(checkCalls, 1800);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [authenticated]);
 
   const login = async event => {
     event.preventDefault(); setError('');
@@ -650,6 +882,9 @@ function Admin({ reloadStore }) {
   const toggleOrderDetails = order => {
     setExpandedOrders(current => current.includes(order.id) ? current.filter(id => id !== order.id) : [...current, order.id]);
     if (!order.adminRead) api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh).catch(reason => setError(reason.message));
+  };  const openIncomingCall = call => {
+    setExpandedOrders(current => current.includes(call.orderId) ? current : [...current, call.orderId]);
+    setTimeout(() => document.getElementById('admin-order-' + call.orderId)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 120);
   };
   const sendAdminChat = async (event, order) => {
     event.preventDefault();
@@ -693,19 +928,19 @@ function Admin({ reloadStore }) {
 
   const unread = orders.filter(order => !order.adminRead);
   return <main className="admin-page">
-    <div className="admin-heading"><div><span className="eyebrow">ADMIN PANEL</span><h1>Good day. Here’s your store.</h1><p>Orders refresh automatically every 12 seconds.</p></div><div className="admin-actions"><button className="notify-button" onClick={enableAlerts}><Icon name="bell" />Enable device alerts</button><button className="primary" onClick={() => { setAdding(true); setEditing(null); }}><Icon name="plus" />Add product</button></div></div>
+    <div className="admin-heading"><div><span className="eyebrow">ADMIN PANEL</span><h1>Good day. Here’s your store.</h1><p>Orders refresh automatically every 12 seconds.</p></div><div className="admin-actions"><button className="notify-button" onClick={enableAlerts}><Icon name="bell" />Enable device alerts</button><button className="primary" onClick={() => { setAdding(true); setEditing(null); }}><Icon name="plus" />Add product</button></div></div>    {incomingCalls[0] && <aside className="global-incoming-call" role="alert"><span className="incoming-call-ring">☎</span><div><small>INCOMING PRIVATE CALL</small><b>{incomingCalls[0].customerName}</b><span>Order {incomingCalls[0].orderId}</span></div><button type="button" onClick={() => openIncomingCall(incomingCalls[0])}>Open & answer</button></aside>}
     {alerts && <div className="notice success-notice">{alerts}</div>}{error && <div className="notice error-notice">{error}</div>}
     <section className="admin-stats"><div><span>Catalogue</span><b>{products.length}</b><small>active products</small></div><div><span>Orders</span><b>{orders.length}</b><small>all time</small></div><div className={unread.length ? 'attention' : ''}><span>Needs attention</span><b>{unread.length}</b><small>new orders</small></div><div><span>Catalogue value</span><b>{money(products.reduce((sum, product) => sum + product.price * product.stock, 0))}</b><small>current stock</small></div></section>
     {promotions && <div className="admin-promo-card"><div><div><span>SHRI50 USAGE</span><b>{promotions.coupon.used} / {promotions.coupon.limit}</b><small>{promotions.coupon.remaining} account uses remaining</small></div><div><span>REFERRAL MEMBERS</span><b>{promotions.referrals.length}</b><small>{promotions.referrals.reduce((sum, item) => sum + item.referralCount, 0)} successful referrals</small></div></div></div>}
     {(adding || editing) && <ProductForm product={editing} onCancel={() => { setAdding(false); setEditing(null); }} onSaved={saved} />}
     <section className="admin-section"><div className="admin-section-title"><div><h2>Incoming orders</h2><p>Newest first · live refresh</p></div><button className="text-button" onClick={refresh}>Refresh now</button></div>
-      {!orders.length ? <div className="empty-state small"><span>🔔</span><h3>No orders yet</h3></div> : <div className="order-list">{orders.map(order => <article className={'admin-order ' + (!order.adminRead ? 'unread' : '')} key={order.id}>
+      {!orders.length ? <div className="empty-state small"><span>🔔</span><h3>No orders yet</h3></div> : <div className="order-list">{orders.map(order => <article id={'admin-order-' + order.id} className={'admin-order ' + (!order.adminRead ? 'unread' : '')} key={order.id}>
         <div className="order-top"><div><span className="order-id">{order.id}</span>{!order.adminRead && <b className="new-badge">NEW</b>}<h3>{order.customer.name}</h3><p>{order.customer.phone} · {order.customer.address}</p></div><div><strong>{money(order.total)}</strong><span>{new Date(order.createdAt).toLocaleString('en-IN')}</span></div></div>
         <div className="order-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
         <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🚚 Delivery {order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</span><span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.weeklyBasket?.enabled && <span>📅 Weekly · {order.weeklyBasket.day}</span>}{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
         <div className="admin-status-control"><div><small>CUSTOMER LIVE STATUS</small><b>{order.status || 'Pending approval'}</b></div><div>{ORDER_STAGES.map((status, index) => { const current = Math.max(0, ORDER_STAGES.indexOf(order.status || 'Pending approval')); return <button key={status} disabled={index !== current + 1} className={index <= current ? 'complete' : ''} onClick={() => updateOrderStatus(order, status)}>{index < current ? '✓ ' : ''}{status}</button>; })}</div></div>
         <button type="button" className="more-order-button" onClick={() => toggleOrderDetails(order)}><span>{expandedOrders.includes(order.id) ? '−' : '+'}</span>{expandedOrders.includes(order.id) ? 'Hide order info & chat' : 'More order info & chat'}{order.chatMessages?.length > 0 && <b>{order.chatMessages.length} messages</b>}</button>
-        {expandedOrders.includes(order.id) && <section className="admin-order-more"><div className="order-detail-grid"><div><small>FULL NAME</small><b>{order.customer.name}</b></div><div><small>PHONE</small><b>{order.customer.phone}</b></div><div className="wide"><small>DELIVERY ADDRESS</small><b>{order.customer.address}</b></div><div><small>SUBTOTAL</small><b>{money(order.subtotal)}</b></div><div><small>DISCOUNT</small><b>{money(order.discount || 0)}</b></div><div><small>DELIVERY FEE</small><b>{order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</b></div><div><small>FINAL TOTAL</small><b>{money(order.total)}</b></div>{order.referredBy && <div className="wide"><small>REFERRED BY</small><b>{order.referredBy}</b></div>}{order.customer.notes && <div className="wide"><small>CUSTOMER NOTE</small><b>{order.customer.notes}</b></div>}</div><div className="order-chat admin-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with {order.customer.name}</b><small>Messages appear in the customer’s Track Order screen.</small></div></div><div className="chat-tools"><a className="chat-call-button" href={'tel:+91' + String(order.customer.phone).replace(/\D/g, '').slice(-10)}>📞 Call customer</a><small>ORDER CHAT</small></div></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet.</p> : order.chatMessages.map(message => <article className={message.sender === 'admin' ? 'admin-message' : 'customer-message'} key={message.id}><b>{message.sender === 'admin' ? 'You' : order.customer.name}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={event => sendAdminChat(event, order)}><input value={chatDrafts[order.id] || ''} onChange={event => setChatDrafts(current => ({ ...current, [order.id]: event.target.value }))} maxLength="500" placeholder="Type an update for the customer…" /><VoiceRecorderButton onSend={(audioData, duration) => sendAdminVoice(order, audioData, duration)} onError={setError} disabled={chatSending === order.id} /><button className="primary" disabled={chatSending === order.id || !(chatDrafts[order.id] || '').trim()}>{chatSending === order.id ? 'Sending…' : 'Send'}</button></form></div></section>}
+        {expandedOrders.includes(order.id) && <section className="admin-order-more"><div className="order-detail-grid"><div><small>FULL NAME</small><b>{order.customer.name}</b></div><div><small>PHONE</small><b>{order.customer.phone}</b></div><div className="wide"><small>DELIVERY ADDRESS</small><b>{order.customer.address}</b></div><div><small>SUBTOTAL</small><b>{money(order.subtotal)}</b></div><div><small>DISCOUNT</small><b>{money(order.discount || 0)}</b></div><div><small>DELIVERY FEE</small><b>{order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</b></div><div><small>FINAL TOTAL</small><b>{money(order.total)}</b></div>{order.referredBy && <div className="wide"><small>REFERRED BY</small><b>{order.referredBy}</b></div>}{order.customer.notes && <div className="wide"><small>CUSTOMER NOTE</small><b>{order.customer.notes}</b></div>}</div><div className="order-chat admin-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with {order.customer.name}</b><small>Messages appear in the customer’s Track Order screen.</small></div></div><div className="chat-tools"><small>SECURE ORDER CHAT</small></div></div><InAppCall role="admin" orderId={order.id} otherName={order.customer.name} onError={setError} /><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet.</p> : order.chatMessages.map(message => <article className={message.sender === 'admin' ? 'admin-message' : 'customer-message'} key={message.id}><b>{message.sender === 'admin' ? 'You' : order.customer.name}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={event => sendAdminChat(event, order)}><input value={chatDrafts[order.id] || ''} onChange={event => setChatDrafts(current => ({ ...current, [order.id]: event.target.value }))} maxLength="500" placeholder="Type an update for the customer…" /><VoiceRecorderButton onSend={(audioData, duration) => sendAdminVoice(order, audioData, duration)} onError={setError} disabled={chatSending === order.id} /><button className="primary" disabled={chatSending === order.id || !(chatDrafts[order.id] || '').trim()}>{chatSending === order.id ? 'Sending…' : 'Send'}</button></form></div></section>}
         {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark notification read</button>}
       </article>)}</div>}
     </section>

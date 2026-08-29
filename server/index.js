@@ -147,6 +147,7 @@ const admin = (req, res, next) => {
 };
 
 const requestBuckets = new Map();
+const activeCalls = new Map();
 const rateLimit = (name, max, windowMs) => (req, res, next) => {
   const now = Date.now();
   const key = `${name}:${req.ip}`;
@@ -180,6 +181,88 @@ const cleanChatPayload = body => {
   }
   if (!text) throw promotionError('Enter a message or record a voice message.');
   return { type: 'text', text, audioData: '', duration: 0 };
+};
+
+const callIceServers = () => {
+  const servers = [
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
+  const turnUrls = String(process.env.TURN_URL || '').split(',').map(value => value.trim()).filter(Boolean);
+  if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    servers.push({ urls: turnUrls, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  }
+  return servers;
+};
+const pruneCalls = () => {
+  const now = Date.now();
+  for (const [orderId, call] of activeCalls) {
+    const age = now - new Date(call.updatedAt || call.createdAt).getTime();
+    if (call.status === 'ringing' && age > 90000) {
+      call.status = 'missed';
+      call.endedAt = new Date().toISOString();
+      call.updatedAt = call.endedAt;
+    }
+    if (age > 2 * 60 * 60 * 1000) activeCalls.delete(orderId);
+  }
+};
+const callView = (call, actor) => call ? ({
+  id: call.id,
+  orderId: call.orderId,
+  caller: call.caller,
+  status: call.status,
+  createdAt: call.createdAt,
+  acceptedAt: call.acceptedAt || null,
+  endedAt: call.endedAt || null,
+  signals: call.signals.filter(signal => signal.to === actor)
+}) : null;
+const handleCallAction = (orderId, actor, body = {}) => {
+  pruneCalls();
+  const action = String(body.action || 'state').trim();
+  let call = activeCalls.get(orderId);
+  if (action === 'initiate') {
+    if (call && ['ringing', 'active'].includes(call.status)) {
+      if (call.caller !== actor) throw Object.assign(promotionError('An incoming call is already waiting.'), { status: 409 });
+      return callView(call, actor);
+    }
+    const now = new Date().toISOString();
+    call = { id: crypto.randomUUID(), orderId, caller: actor, status: 'ringing', createdAt: now, updatedAt: now, acceptedAt: null, endedAt: null, signals: [] };
+    activeCalls.set(orderId, call);
+    return callView(call, actor);
+  }
+  if (!call) {
+    if (action === 'state') return null;
+    throw Object.assign(promotionError('This call is no longer available.'), { status: 404 });
+  }
+  const now = new Date().toISOString();
+  if (action === 'accept') {
+    if (call.caller === actor || call.status !== 'ringing') throw promotionError('This call cannot be accepted now.');
+    call.status = 'active';
+    call.acceptedAt = now;
+    call.updatedAt = now;
+  } else if (action === 'reject') {
+    if (call.caller === actor || call.status !== 'ringing') throw promotionError('This call cannot be declined now.');
+    call.status = 'rejected';
+    call.endedAt = now;
+    call.updatedAt = now;
+  } else if (action === 'end') {
+    if (!['ringing', 'active'].includes(call.status)) return callView(call, actor);
+    call.status = 'ended';
+    call.endedAt = now;
+    call.updatedAt = now;
+  } else if (action === 'signal') {
+    if (!['ringing', 'active'].includes(call.status)) throw promotionError('This call has ended.');
+    const signalType = String(body.signal?.type || '');
+    if (!['offer', 'answer', 'candidate'].includes(signalType)) throw promotionError('Invalid call signal.');
+    const data = body.signal?.data;
+    if (!data || JSON.stringify(data).length > 30000) throw promotionError('Invalid call signal data.');
+    call.signals.push({ id: crypto.randomUUID(), from: actor, to: actor === 'admin' ? 'customer' : 'admin', type: signalType, data, createdAt: now });
+    call.signals = call.signals.slice(-160);
+    call.updatedAt = now;
+  } else if (action !== 'state') {
+    throw promotionError('Invalid call action.');
+  }
+  return callView(call, actor);
 };
 
 const referralView = referral => ({
@@ -247,7 +330,8 @@ const customerOrderView = order => ({
   statusHistory: order.statusHistory || [{ status: order.status || 'Pending approval', at: order.createdAt }],
   chatMessages: (order.chatMessages || []).map(message => ({ id: message.id, sender: message.sender, type: message.type || (message.audioData ? 'audio' : 'text'), text: message.text || '', audioData: message.audioData || '', duration: message.duration || 0, createdAt: message.createdAt })),
   deliverySlot: order.customer?.deliverySlot,
-  createdAt: order.createdAt
+  createdAt: order.createdAt,
+  callAccessToken: order.callAccessToken || ''
 });
 
 app.set('trust proxy', 1);
@@ -256,10 +340,6 @@ app.use(express.json({ limit: '1mb' }));
 app.use(morgan('tiny'));
 
 app.get('/api/health', (_, res) => res.json({ ok: true, storage: pool ? 'postgres' : 'json', ai: Boolean(process.env.GEMINI_API_KEY), push: pushConfigured }));
-app.get('/api/store/contact', (_, res) => {
-  const phone = normalizePhone(process.env.STORE_PHONE || process.env.WHATSAPP_RECIPIENT_PHONE);
-  res.json({ phone: phone.length === 10 ? '+91' + phone : '' });
-});
 app.get('/api/products', async (req, res, next) => {
   try {
     const { q = '', category = '' } = req.query;
@@ -503,6 +583,7 @@ app.post('/api/orders', rateLimit('orders', 20, 10 * 60 * 1000), async (req, res
       status: 'Pending approval',
       statusHistory: [{ status: 'Pending approval', at: new Date().toISOString() }],
       chatMessages: [],
+      callAccessToken: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       adminRead: false,
       adminReadAt: null,
@@ -527,8 +608,13 @@ app.post('/api/orders/track', rateLimit('order-track', 80, 10 * 60 * 1000), asyn
     const phone = normalizePhone(req.body.phone);
     const orderId = String(req.body.orderId || '').trim().toUpperCase();
     if (phone.length !== 10 || !orderId) throw promotionError('Enter the order ID and the same phone number used at checkout.');
-    const order = (await read()).orders.find(item => item.id === orderId && normalizePhone(item.customer?.phone) === phone);
+    const db = await read();
+    const order = db.orders.find(item => item.id === orderId && normalizePhone(item.customer?.phone) === phone);
     if (!order) throw promotionError('Order details did not match. Please check your order ID and phone number.');
+    if (!order.callAccessToken) {
+      order.callAccessToken = crypto.randomUUID();
+      await write(db);
+    }
     res.json(customerOrderView(order));
   } catch (error) { next(error); }
 });
@@ -561,6 +647,40 @@ app.post('/api/orders/:id/chat', admin, async (req, res, next) => {
     order.chatMessages.push(message);
     await write(db);
     res.status(201).json(message);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/orders/call', rateLimit('customer-order-call', 600, 10 * 60 * 1000), async (req, res, next) => {
+  try {
+    const accessToken = String(req.body.accessToken || '').trim();
+    const orderId = String(req.body.orderId || '').trim().toUpperCase();
+    if (!accessToken || !orderId) throw promotionError('Private order call access could not be verified.');
+    const order = (await read()).orders.find(item => item.id === orderId && item.callAccessToken === accessToken);
+    if (!order) throw promotionError('Private order call access could not be verified.');
+    res.json({ call: handleCallAction(orderId, 'customer', req.body), iceServers: callIceServers() });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/orders/:id/call', admin, async (req, res, next) => {
+  try {
+    const orderId = String(req.params.id || '').trim().toUpperCase();
+    const order = (await read()).orders.find(item => item.id === orderId);
+    if (!order) return res.sendStatus(404);
+    res.json({ call: handleCallAction(orderId, 'admin', req.body), iceServers: callIceServers() });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/admin/calls/incoming', admin, async (_, res, next) => {
+  try {
+    pruneCalls();
+    const orders = (await read()).orders;
+    const incoming = [...activeCalls.values()]
+      .filter(call => call.caller === 'customer' && call.status === 'ringing')
+      .map(call => {
+        const order = orders.find(item => item.id === call.orderId);
+        return { id: call.id, orderId: call.orderId, customerName: order?.customer?.name || 'Customer', createdAt: call.createdAt };
+      });
+    res.json(incoming);
   } catch (error) { next(error); }
 });
 

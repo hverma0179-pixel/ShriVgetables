@@ -208,3 +208,72 @@ input,textarea,select{transition:border-color .22s,box-shadow .22s,background .2
   .voice-message-button::first-letter{font-size:16px}
   .voice-message-button.recording{font-size:10px}
 }
+/* Private order calls and stable full-screen mobile shell */
+html,body,#root{width:100%;min-height:100%}
+body{min-height:100dvh;overflow-x:clip}
+.in-app-call{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:13px 18px;align-items:center;margin:0 0 14px;padding:15px;border-radius:16px;background:linear-gradient(135deg,#102f23,#1d5d40);color:#fff;box-shadow:0 14px 30px rgba(18,72,50,.16);overflow:hidden;position:relative}
+.in-app-call:before{content:"";position:absolute;width:150px;height:150px;border-radius:50%;right:-70px;top:-95px;background:rgba(239,185,73,.15)}
+.in-app-call audio{display:none}
+.call-identity{display:flex;align-items:center;gap:11px;min-width:0;position:relative}
+.call-avatar{width:44px;height:44px;flex:none;border-radius:15px;display:grid;place-items:center;background:linear-gradient(145deg,#f8ca67,#e86f3b);color:#fff;font-size:20px;box-shadow:0 7px 17px rgba(0,0,0,.18)}
+.call-identity small,.call-identity b,.call-identity div>span{display:block}
+.call-identity small{font-size:8px;letter-spacing:1.2px;color:#bed2c5;font-weight:900}
+.call-identity b{font-size:14px;margin:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.call-identity div>span{font-size:9px;color:#acc4b5}
+.call-state{display:flex;align-items:end;justify-content:flex-end;gap:3px;position:relative}
+.call-state i{display:block;width:3px;height:8px;border-radius:5px;background:#f2c55f;animation:callBar .85s ease-in-out infinite alternate}
+.call-state i:nth-child(2){height:14px;animation-delay:-.2s}.call-state i:nth-child(3){height:10px;animation-delay:-.45s}.call-state i:nth-child(4){height:17px;animation-delay:-.65s}
+.call-state strong{margin-left:6px;font-size:10px;white-space:nowrap;color:#dbe9df}
+.call-actions{grid-column:1/-1;display:flex;gap:8px;position:relative}
+.call-actions button,.global-incoming-call button{min-height:40px;padding:9px 14px;border-radius:999px;font-size:10px;font-weight:900;transition:transform .2s,filter .2s}
+.call-actions button:hover,.global-incoming-call button:hover{transform:translateY(-1px);filter:brightness(1.05)}
+.call-start,.call-answer{background:#f0bd4d;color:#173b2b}.call-decline{background:#fff1ee;color:#9d3e33}.call-muted{background:#fff0c8;color:#6e4c14}.call-actions button:not(.call-start):not(.call-answer):not(.call-decline):not(.call-muted){background:#e7f0e7;color:#173b2b}
+.in-app-call.is-ringing{animation:callPulse 1.7s ease-in-out infinite}
+.global-incoming-call{position:sticky;top:88px;z-index:28;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin:18px 0;padding:13px 15px;border-radius:17px;background:linear-gradient(115deg,#173f2d,#286d4b);color:#fff;box-shadow:0 15px 40px rgba(18,72,50,.25);animation:callPulse 1.7s ease-in-out infinite}
+.incoming-call-ring{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#f0bd4d;color:#173b2b;font-size:18px}
+.global-incoming-call small,.global-incoming-call b,.global-incoming-call div>span{display:block}.global-incoming-call small{font-size:8px;letter-spacing:1.2px;color:#bbd3c2}.global-incoming-call b{font-size:14px}.global-incoming-call div>span{font-size:9px;color:#cce0d2}.global-incoming-call button{background:#fff;color:#173b2b;white-space:nowrap}
+.nav-shop-icon{display:none}
+@keyframes callBar{to{height:20px;opacity:.55}}@keyframes callPulse{50%{box-shadow:0 16px 42px rgba(31,106,69,.35),0 0 0 5px rgba(239,185,73,.1)}}
+
+@media(max-width:760px){
+  html{width:100%;min-height:100%;background:var(--cream)}
+  body{width:100%;min-height:100dvh;padding:0 0 calc(88px + env(safe-area-inset-bottom));overscroll-behavior-x:none}
+  #root{width:100%;min-width:0;min-height:100dvh;overflow-x:clip}
+  header{width:100%;height:calc(64px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));position:sticky;top:0;background:rgba(251,249,242,.94);backdrop-filter:none}
+  .brand span{width:38px;height:38px}.brand i{display:block;font-size:10px;letter-spacing:1.7px}
+  header nav{position:fixed;left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));bottom:calc(9px + env(safe-area-inset-bottom));z-index:70;height:66px;padding:6px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;border:1px solid rgba(255,255,255,.7);border-radius:21px;background:rgba(16,47,35,.96);backdrop-filter:blur(18px);box-shadow:0 17px 42px rgba(9,36,25,.28)}
+  header nav>button,header nav>button:first-child{min-width:0;min-height:54px;padding:5px 7px;border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;color:#d7e4db;background:transparent!important;font-size:10px;line-height:1.1;overflow:visible}
+  header nav>button:after{display:none}
+  header nav>button svg{width:19px;height:19px}
+  header nav>button.nav-active{color:#163d2c;background:#f0bd4d!important}
+  header nav .ai-nav{color:#ffe6a8}header nav .ai-nav span,header nav .cart-nav span{display:block}.nav-shop-icon{display:block;font-size:21px;line-height:18px}
+  .cart-nav{position:relative}.cart-nav b{position:absolute;top:2px;right:calc(50% - 25px);min-width:18px;height:18px;font-size:9px}
+  .hero{width:100%;min-height:auto;padding:44px max(16px,env(safe-area-inset-right)) 55px max(16px,env(safe-area-inset-left));grid-template-columns:1fr;gap:28px}
+  .hero h1{font-size:clamp(42px,13vw,60px);letter-spacing:-2px}.hero-copy>p{font-size:15px}.hero-visual{min-height:360px}
+  .market{width:100%;padding:68px max(14px,env(safe-area-inset-right)) 76px max(14px,env(safe-area-inset-left))}
+  .ai-banner{margin-left:max(14px,env(safe-area-inset-left));margin-right:max(14px,env(safe-area-inset-right))}
+  .cart-page,.admin-page,.track-page{width:100%;max-width:100%;min-width:0;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:34px}
+  footer{width:100%;padding-bottom:calc(112px + env(safe-area-inset-bottom))}
+  .in-app-call{grid-template-columns:1fr;margin-bottom:12px;padding:13px 11px;gap:11px}
+  .call-state{justify-content:flex-start;margin-left:55px}.call-state strong{white-space:normal}
+  .call-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.call-actions button:only-child{grid-column:1/-1}
+  .call-actions button{width:100%;min-height:44px}
+  .global-incoming-call{position:sticky;left:auto;right:auto;top:calc(72px + env(safe-area-inset-top));z-index:65;margin:14px 0;grid-template-columns:auto minmax(0,1fr);padding:11px 12px}
+  .global-incoming-call button{grid-column:1/-1;width:100%;min-height:42px}
+  .order-chat form{grid-template-columns:minmax(0,1fr) minmax(84px,.34fr);grid-template-areas:"message message" "voice send";gap:7px;position:static;bottom:auto}
+  .order-chat form input{grid-area:message}.order-chat form .voice-message-button{grid-area:voice;width:100%;font-size:10px}.order-chat form .primary{grid-area:send;width:100%;min-width:0}
+  #pwa-install{left:auto;right:max(13px,env(safe-area-inset-right));bottom:calc(86px + env(safe-area-inset-bottom));z-index:60;min-height:40px;padding:8px 12px}
+  #pwa-help{left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));bottom:calc(138px + env(safe-area-inset-bottom));max-width:none}
+  .toast{left:12px;right:12px;top:calc(75px + env(safe-area-inset-top));justify-content:center}
+}
+@media(max-width:420px){
+  .brand i{max-width:130px;overflow:hidden;text-overflow:ellipsis}
+  .chat-tools{margin:8px 0 0 31px}.voice-message-button::first-letter{font-size:inherit}
+}
+@media(display-mode:standalone),(display-mode:fullscreen){
+  #pwa-install,#pwa-help{display:none!important}
+  body{min-height:100dvh}
+}
+@media(prefers-reduced-motion:reduce){
+  .call-state i,.in-app-call.is-ringing,.global-incoming-call{animation:none!important}
+}

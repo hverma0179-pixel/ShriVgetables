@@ -1,4 +1,4 @@
-const CACHE = 'shri-vegetables-v11';
+const CACHE = 'shri-vegetables-v12';
 const APP_FILES = ['/', '/manifest.webmanifest', '/icons/shri-192.svg', '/icons/shri-512.svg'];
 
 self.addEventListener('install', event => {
