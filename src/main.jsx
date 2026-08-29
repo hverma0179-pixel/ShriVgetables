@@ -43,6 +43,10 @@ function Icon({ name }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24"><path d={icons[name]} /></svg>;
 }
 
+function AdBanner() {
+  const adDocument = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=160,initial-scale=1"><style>html,body{width:160px;height:600px;margin:0;overflow:hidden;background:transparent}</style></head><body><script>try{Object.defineProperty(document,'cookie',{configurable:true,get:function(){return ''},set:function(){return true}})}catch(error){}window.atOptions={key:'e72100321d1880d820a5b1e24ba6c024',format:'iframe',height:600,width:160,params:{}};<\/script><script src="https://www.highrevenueformat.com/e72100321d1880d820a5b1e24ba6c024/invoke.js"><\/script></body></html>`;
+  return <aside className="shop-ad" aria-label="Advertisement"><span>ADVERTISEMENT</span><div className="ad-frame"><iframe title="Sponsored advertisement" srcDoc={adDocument} width="160" height="600" loading="lazy" scrolling="no" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="strict-origin-when-cross-origin" /></div></aside>;
+}
 function App() {
   const incomingReferral = new URLSearchParams(location.search).get('ref') || '';
   const getPage = () => new URLSearchParams(location.search).get('page') || 'shop';
@@ -169,7 +173,7 @@ function Shop({ products, loading, addToCart, favorites, setFavorites, select, o
       <div className="hero-visual"><div className="sun-shape" /><ProductImage src="/products/vegetables/potato.webp" alt="Fresh potatoes" eager /><div className="floating-card floating-one"><b>100% name matched</b><span>Photo · title · details</span></div><div className="floating-card floating-two"><span className="live-dot" />Fresh stock today</div></div>
     </section>
     <section className="service-strip"><span>✓ Carefully matched photos</span><span>✓ Mobile-friendly ordering</span><span>✓ AI only when you ask</span><span>✓ Admin-confirmed orders</span></section>
-    <section className="market" id="catalogue">
+    <div className="catalogue-ad-layout"><section className="market" id="catalogue">
       <div className="section-heading"><div><span className="eyebrow">THE FRESH EDIT</span><h2>Pick what feels good today.</h2><p>{products.length} fresh products currently available.</p></div><div className="search-box"><Icon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search tomato, आलू…" /></div></div>
       <div className="catalogue-tools">
         <div className="chips">{categories.map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
@@ -178,7 +182,7 @@ function Shop({ products, loading, addToCart, favorites, setFavorites, select, o
       {loading ? <div className="grid">{Array.from({ length: 8 }, (_, index) => <div className="skeleton card" key={index}><div /><span /><span /></div>)}</div>
         : shown.length ? <div className="grid">{shown.map(product => <ProductCard key={product.id} product={product} add={() => addToCart(product)} details={() => select(product)} saved={favorites.includes(product.id)} toggleSaved={() => toggleFavorite(product)} />)}</div>
         : <div className="empty-state"><span>🥬</span><h3>No matching produce</h3><p>Try another search or category.</p><button className="soft-button" onClick={() => { setQuery(''); setCategory('All'); setOnlySaved(false); }}>Show everything</button></div>}
-    </section>
+    </section><AdBanner /></div>
     <section className="ai-banner"><div><span className="eyebrow">GEMINI-POWERED SHOPPING HELP</span><h2>Tell us the meals. Get the whole list.</h2><p>Ask for a weekly family basket, a sabzi plan, salad ingredients or a budget-friendly list. You review every item before ordering.</p></div><button className="light-button" onClick={openAi}><Icon name="sparkle" />Ask the AI helper</button></section>
   </main>;
 }
