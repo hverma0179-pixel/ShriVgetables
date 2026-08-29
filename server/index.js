@@ -168,6 +168,19 @@ const orderStatuses = ['Pending approval', 'Confirmed', 'Packing', 'Ready for de
 const minimumOrderAmount = 100;
 const standardDeliveryFee = 20;
 const promotionError = message => Object.assign(new Error(message), { status: 400 });
+const maximumVoiceCharacters = 850000;
+const cleanChatPayload = body => {
+  const text = String(body.message || '').trim().slice(0, 500);
+  const audioData = String(body.audioData || '').trim();
+  const duration = Math.max(1, Math.min(30, Math.round(Number(body.duration) || 1)));
+  const validAudio = /^data:audio\/(?:webm|ogg|mp4|mpeg|wav|x-m4a)(?:;codecs=[^;,]+)?;base64,[A-Za-z0-9+/=]+$/i.test(audioData);
+  if (audioData) {
+    if (!validAudio || audioData.length > maximumVoiceCharacters) throw promotionError('Voice message must be 30 seconds or less.');
+    return { type: 'audio', text: '', audioData, duration };
+  }
+  if (!text) throw promotionError('Enter a message or record a voice message.');
+  return { type: 'text', text, audioData: '', duration: 0 };
+};
 
 const referralView = referral => ({
   code: referral.code,
@@ -232,17 +245,21 @@ const customerOrderView = order => ({
   total: order.total,
   status: order.status,
   statusHistory: order.statusHistory || [{ status: order.status || 'Pending approval', at: order.createdAt }],
-  chatMessages: (order.chatMessages || []).map(message => ({ id: message.id, sender: message.sender, text: message.text, createdAt: message.createdAt })),
+  chatMessages: (order.chatMessages || []).map(message => ({ id: message.id, sender: message.sender, type: message.type || (message.audioData ? 'audio' : 'text'), text: message.text || '', audioData: message.audioData || '', duration: message.duration || 0, createdAt: message.createdAt })),
   deliverySlot: order.customer?.deliverySlot,
   createdAt: order.createdAt
 });
 
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(morgan('tiny'));
 
 app.get('/api/health', (_, res) => res.json({ ok: true, storage: pool ? 'postgres' : 'json', ai: Boolean(process.env.GEMINI_API_KEY), push: pushConfigured }));
+app.get('/api/store/contact', (_, res) => {
+  const phone = normalizePhone(process.env.STORE_PHONE || process.env.WHATSAPP_RECIPIENT_PHONE);
+  res.json({ phone: phone.length === 10 ? '+91' + phone : '' });
+});
 app.get('/api/products', async (req, res, next) => {
   try {
     const { q = '', category = '' } = req.query;
@@ -519,13 +536,13 @@ app.post('/api/orders/chat', rateLimit('customer-order-chat', 50, 10 * 60 * 1000
   try {
     const phone = normalizePhone(req.body.phone);
     const orderId = String(req.body.orderId || '').trim().toUpperCase();
-    const text = String(req.body.message || '').trim().slice(0, 500);
-    if (phone.length !== 10 || !orderId || !text) throw promotionError('Enter a message for this order.');
+    const payload = cleanChatPayload(req.body);
+    if (phone.length !== 10 || !orderId) throw promotionError('Enter valid order details.');
     const db = await read();
     const order = db.orders.find(item => item.id === orderId && normalizePhone(item.customer?.phone) === phone);
     if (!order) throw promotionError('Order details did not match.');
     order.chatMessages ||= [];
-    const message = { id: crypto.randomUUID(), sender: 'customer', text, createdAt: new Date().toISOString() };
+    const message = { id: crypto.randomUUID(), sender: 'customer', ...payload, createdAt: new Date().toISOString() };
     order.chatMessages.push(message);
     order.adminRead = false;
     await write(db);
@@ -535,13 +552,12 @@ app.post('/api/orders/chat', rateLimit('customer-order-chat', 50, 10 * 60 * 1000
 
 app.post('/api/orders/:id/chat', admin, async (req, res, next) => {
   try {
-    const text = String(req.body.message || '').trim().slice(0, 500);
-    if (!text) throw promotionError('Enter a message for the customer.');
+    const payload = cleanChatPayload(req.body);
     const db = await read();
     const order = db.orders.find(item => item.id === req.params.id);
     if (!order) return res.sendStatus(404);
     order.chatMessages ||= [];
-    const message = { id: crypto.randomUUID(), sender: 'admin', text, createdAt: new Date().toISOString() };
+    const message = { id: crypto.randomUUID(), sender: 'admin', ...payload, createdAt: new Date().toISOString() };
     order.chatMessages.push(message);
     await write(db);
     res.status(201).json(message);

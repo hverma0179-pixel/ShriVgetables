@@ -43,9 +43,67 @@ function Icon({ name }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24"><path d={icons[name]} /></svg>;
 }
 
-function AdBanner() {
-  const adDocument = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=160,initial-scale=1"><style>html,body{width:160px;height:600px;margin:0;overflow:hidden;background:transparent}</style></head><body><script>try{Object.defineProperty(document,'cookie',{configurable:true,get:function(){return ''},set:function(){return true}})}catch(error){}window.atOptions={key:'e72100321d1880d820a5b1e24ba6c024',format:'iframe',height:600,width:160,params:{}};<\/script><script src="https://www.highrevenueformat.com/e72100321d1880d820a5b1e24ba6c024/invoke.js"><\/script></body></html>`;
-  return <aside className="shop-ad" aria-label="Advertisement"><span>ADVERTISEMENT</span><div className="ad-frame"><iframe title="Sponsored advertisement" srcDoc={adDocument} width="160" height="600" loading="lazy" scrolling="no" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="strict-origin-when-cross-origin" /></div></aside>;
+function VoiceRecorderButton({ onSend, onError, disabled = false }) {
+  const [recording, setRecording] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const recorder = useRef(null);
+  const stream = useRef(null);
+  const chunks = useRef([]);
+  const timer = useRef(null);
+  const elapsed = useRef(0);
+  const discard = useRef(false);
+
+  const stop = () => {
+    if (recorder.current?.state === 'recording') recorder.current.stop();
+  };
+  const start = async () => {
+    if (disabled) return;
+    if (recording) { stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      onError?.('Voice recording is not supported on this device.');
+      return;
+    }
+    try {
+      discard.current = false;
+      stream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const supported = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported?.(type));
+      recorder.current = new MediaRecorder(stream.current, supported ? { mimeType: supported, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
+      chunks.current = [];
+      elapsed.current = 0;
+      setSeconds(0);
+      recorder.current.ondataavailable = event => { if (event.data.size) chunks.current.push(event.data); };
+      recorder.current.onstop = () => {
+        clearInterval(timer.current);
+        stream.current?.getTracks().forEach(track => track.stop());
+        setRecording(false);
+        if (discard.current) return;
+        const blob = new Blob(chunks.current, { type: recorder.current?.mimeType || 'audio/webm' });
+        if (!blob.size) return;
+        if (blob.size > 600000) { onError?.('Voice message is too large. Keep it under 30 seconds.'); return; }
+        const reader = new FileReader();
+        reader.onload = () => onSend(String(reader.result), Math.max(1, elapsed.current));
+        reader.readAsDataURL(blob);
+      };
+      recorder.current.start(250);
+      setRecording(true);
+      timer.current = setInterval(() => {
+        elapsed.current += 1;
+        setSeconds(elapsed.current);
+        if (elapsed.current >= 30) stop();
+      }, 1000);
+    } catch (reason) {
+      stream.current?.getTracks().forEach(track => track.stop());
+      onError?.(reason?.name === 'NotAllowedError' ? 'Microphone permission was not allowed.' : 'Could not start voice recording.');
+    }
+  };
+  useEffect(() => () => {
+    discard.current = true;
+    clearInterval(timer.current);
+    if (recorder.current?.state === 'recording') recorder.current.stop();
+    stream.current?.getTracks().forEach(track => track.stop());
+  }, []);
+
+  return <button type="button" className={'voice-message-button ' + (recording ? 'recording' : '')} onClick={start} disabled={disabled} aria-label={recording ? 'Stop and send voice message' : 'Record voice message'}>{recording ? `■ ${seconds}s` : '🎙 Voice'}</button>;
 }
 function App() {
   const incomingReferral = new URLSearchParams(location.search).get('ref') || '';
@@ -170,10 +228,10 @@ function Shop({ products, loading, addToCart, favorites, setFavorites, select, o
         </div>
         <div className="hero-proof"><span><b>15</b> matched products</span><span><b>Fast</b> local ordering</span><span><b>₹</b> clear pricing</span></div>
       </div>
-      <div className="hero-visual"><div className="sun-shape" /><ProductImage src="/products/vegetables/potato.webp" alt="Fresh potatoes" eager /><div className="floating-card floating-one"><b>100% name matched</b><span>Photo · title · details</span></div><div className="floating-card floating-two"><span className="live-dot" />Fresh stock today</div></div>
+      <div className="hero-visual"><div className="sun-shape" /><ProductImage src="/products/vegetables/potato.webp" alt="Fresh potatoes" eager /><div className="floating-card floating-two"><span className="live-dot" />Fresh stock today</div></div>
     </section>
-    <section className="service-strip"><span>✓ Carefully matched photos</span><span>✓ Mobile-friendly ordering</span><span>✓ AI only when you ask</span><span>✓ Admin-confirmed orders</span></section>
-    <div className="catalogue-ad-layout"><section className="market" id="catalogue">
+
+    <section className="market" id="catalogue">
       <div className="section-heading"><div><span className="eyebrow">THE FRESH EDIT</span><h2>Pick what feels good today.</h2><p>{products.length} fresh products currently available.</p></div><div className="search-box"><Icon name="search" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search tomato, आलू…" /></div></div>
       <div className="catalogue-tools">
         <div className="chips">{categories.map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
@@ -182,7 +240,7 @@ function Shop({ products, loading, addToCart, favorites, setFavorites, select, o
       {loading ? <div className="grid">{Array.from({ length: 8 }, (_, index) => <div className="skeleton card" key={index}><div /><span /><span /></div>)}</div>
         : shown.length ? <div className="grid">{shown.map(product => <ProductCard key={product.id} product={product} add={() => addToCart(product)} details={() => select(product)} saved={favorites.includes(product.id)} toggleSaved={() => toggleFavorite(product)} />)}</div>
         : <div className="empty-state"><span>🥬</span><h3>No matching produce</h3><p>Try another search or category.</p><button className="soft-button" onClick={() => { setQuery(''); setCategory('All'); setOnlySaved(false); }}>Show everything</button></div>}
-    </section><AdBanner /></div>
+    </section>
     <section className="ai-banner"><div><span className="eyebrow">GEMINI-POWERED SHOPPING HELP</span><h2>Tell us the meals. Get the whole list.</h2><p>Ask for a weekly family basket, a sabzi plan, salad ingredients or a budget-friendly list. You review every item before ordering.</p></div><button className="light-button" onClick={openAi}><Icon name="sparkle" />Ask the AI helper</button></section>
   </main>;
 }
@@ -438,6 +496,7 @@ function TrackOrder({ navigate }) {
   const [chatDraft, setChatDraft] = useState('');
   const [chatSending, setChatSending] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [storePhone, setStorePhone] = useState('');
   const previousStatus = useRef(saved?.status || '');
 
   const refresh = useCallback(async () => {
@@ -465,6 +524,9 @@ function TrackOrder({ navigate }) {
     const timer = setInterval(refresh, 7000);
     return () => clearInterval(timer);
   }, [refresh]);
+  useEffect(() => {
+    api('/store/contact').then(data => setStorePhone(data.phone || '')).catch(() => {});
+  }, []);
 
   const sendCustomerChat = async event => {
     event.preventDefault();
@@ -473,6 +535,15 @@ function TrackOrder({ navigate }) {
     try {
       await api('/orders/chat', { method: 'POST', body: JSON.stringify({ orderId: saved.id, phone: saved.phone, message: chatDraft }) });
       setChatDraft('');
+      await refresh();
+    } catch (reason) { setChatError(reason.message); }
+    finally { setChatSending(false); }
+  };
+  const sendCustomerVoice = async (audioData, duration) => {
+    if (chatSending || !saved) return;
+    setChatSending(true); setChatError('');
+    try {
+      await api('/orders/chat', { method: 'POST', body: JSON.stringify({ orderId: saved.id, phone: saved.phone, audioData, duration }) });
       await refresh();
     } catch (reason) { setChatError(reason.message); }
     finally { setChatSending(false); }
@@ -493,7 +564,7 @@ function TrackOrder({ navigate }) {
       })}</div>
       <div className="tracking-summary"><div><span>Delivery slot</span><b>{order.deliverySlot || 'As soon as possible'}</b></div><div><span>Items</span><b>{order.items.reduce((sum, item) => sum + item.quantity, 0)}</b></div><div><span>Total</span><b>{money(order.total)}</b></div></div>
       <div className="tracked-items">{order.items.map(item => <span key={item.id}>{item.name} × {item.quantity}</span>)}</div>
-      <section className="order-chat customer-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with Shri Vegetables</b><small>Ask about confirmation, packing or delivery.</small></div></div><small>IN-APP CHAT</small></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet. Send us a question about your order.</p> : order.chatMessages.map(message => <article className={message.sender === 'customer' ? 'customer-message' : 'admin-message'} key={message.id}><b>{message.sender === 'customer' ? 'You' : 'Shri Vegetables'}</b><span>{message.text}</span><small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={sendCustomerChat}><input value={chatDraft} onChange={event => setChatDraft(event.target.value)} maxLength="500" placeholder="Type a message about your order…" /><button className="primary" disabled={chatSending || !chatDraft.trim()}>{chatSending ? 'Sending…' : 'Send'}</button></form>{chatError && <div className="notice error-notice">{chatError}</div>}</section>
+      <section className="order-chat customer-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with Shri Vegetables</b><small>Ask about confirmation, packing or delivery.</small></div></div><div className="chat-tools">{storePhone ? <a className="chat-call-button" href={'tel:' + storePhone}>📞 Call store</a> : <span className="chat-call-disabled" title="Add STORE_PHONE in Render">📞 Call store</span>}<small>IN-APP CHAT</small></div></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet. Send us a question about your order.</p> : order.chatMessages.map(message => <article className={message.sender === 'customer' ? 'customer-message' : 'admin-message'} key={message.id}><b>{message.sender === 'customer' ? 'You' : 'Shri Vegetables'}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={sendCustomerChat}><input value={chatDraft} onChange={event => setChatDraft(event.target.value)} maxLength="500" placeholder="Type a message about your order…" /><VoiceRecorderButton onSend={sendCustomerVoice} onError={setChatError} disabled={chatSending} /><button className="primary" disabled={chatSending || !chatDraft.trim()}>{chatSending ? 'Sending…' : 'Send'}</button></form>{chatError && <div className="notice error-notice">{chatError}</div>}</section>
       {order.status === 'Delivered' && <div className="delivered-message"><Icon name="check" /><div><b>Order delivered</b><small>This order is safely saved in your order history.</small></div></div>}
       {lastChecked && <p className="last-checked">Last checked at {lastChecked.toLocaleTimeString('en-IN')}</p>}
     </section>
@@ -592,6 +663,15 @@ function Admin({ reloadStore }) {
     } catch (reason) { setError(reason.message); }
     finally { setChatSending(''); }
   };
+  const sendAdminVoice = async (order, audioData, duration) => {
+    if (chatSending) return;
+    setChatSending(order.id); setError('');
+    try {
+      await api('/orders/' + order.id + '/chat', { method: 'POST', body: JSON.stringify({ audioData, duration }) });
+      await refresh();
+    } catch (reason) { setError(reason.message); }
+    finally { setChatSending(''); }
+  };
   const enableAlerts = async () => {
     setAlerts(''); setError('');
     try {
@@ -625,7 +705,7 @@ function Admin({ reloadStore }) {
         <div className="order-meta">{order.discount > 0 && <span>🏷 Saved {money(order.discount)}</span>}<span>🚚 Delivery {order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</span><span>🕒 {order.customer.deliverySlot || 'As soon as possible'}</span><span>💳 {order.customer.paymentMethod || 'Cash on delivery'}</span>{order.weeklyBasket?.enabled && <span>📅 Weekly · {order.weeklyBasket.day}</span>}{order.customer.notes && <span>📝 {order.customer.notes}</span>}</div>
         <div className="admin-status-control"><div><small>CUSTOMER LIVE STATUS</small><b>{order.status || 'Pending approval'}</b></div><div>{ORDER_STAGES.map((status, index) => { const current = Math.max(0, ORDER_STAGES.indexOf(order.status || 'Pending approval')); return <button key={status} disabled={index !== current + 1} className={index <= current ? 'complete' : ''} onClick={() => updateOrderStatus(order, status)}>{index < current ? '✓ ' : ''}{status}</button>; })}</div></div>
         <button type="button" className="more-order-button" onClick={() => toggleOrderDetails(order)}><span>{expandedOrders.includes(order.id) ? '−' : '+'}</span>{expandedOrders.includes(order.id) ? 'Hide order info & chat' : 'More order info & chat'}{order.chatMessages?.length > 0 && <b>{order.chatMessages.length} messages</b>}</button>
-        {expandedOrders.includes(order.id) && <section className="admin-order-more"><div className="order-detail-grid"><div><small>FULL NAME</small><b>{order.customer.name}</b></div><div><small>PHONE</small><b>{order.customer.phone}</b></div><div className="wide"><small>DELIVERY ADDRESS</small><b>{order.customer.address}</b></div><div><small>SUBTOTAL</small><b>{money(order.subtotal)}</b></div><div><small>DISCOUNT</small><b>{money(order.discount || 0)}</b></div><div><small>DELIVERY FEE</small><b>{order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</b></div><div><small>FINAL TOTAL</small><b>{money(order.total)}</b></div>{order.referredBy && <div className="wide"><small>REFERRED BY</small><b>{order.referredBy}</b></div>}{order.customer.notes && <div className="wide"><small>CUSTOMER NOTE</small><b>{order.customer.notes}</b></div>}</div><div className="order-chat admin-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with {order.customer.name}</b><small>Messages appear in the customer’s Track Order screen.</small></div></div><small>ORDER CHAT</small></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet.</p> : order.chatMessages.map(message => <article className={message.sender === 'admin' ? 'admin-message' : 'customer-message'} key={message.id}><b>{message.sender === 'admin' ? 'You' : order.customer.name}</b><span>{message.text}</span><small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={event => sendAdminChat(event, order)}><input value={chatDrafts[order.id] || ''} onChange={event => setChatDrafts(current => ({ ...current, [order.id]: event.target.value }))} maxLength="500" placeholder="Type an update for the customer…" /><button className="primary" disabled={chatSending === order.id || !(chatDrafts[order.id] || '').trim()}>{chatSending === order.id ? 'Sending…' : 'Send'}</button></form></div></section>}
+        {expandedOrders.includes(order.id) && <section className="admin-order-more"><div className="order-detail-grid"><div><small>FULL NAME</small><b>{order.customer.name}</b></div><div><small>PHONE</small><b>{order.customer.phone}</b></div><div className="wide"><small>DELIVERY ADDRESS</small><b>{order.customer.address}</b></div><div><small>SUBTOTAL</small><b>{money(order.subtotal)}</b></div><div><small>DISCOUNT</small><b>{money(order.discount || 0)}</b></div><div><small>DELIVERY FEE</small><b>{order.deliveryFee ? money(order.deliveryFee) : 'FREE'}</b></div><div><small>FINAL TOTAL</small><b>{money(order.total)}</b></div>{order.referredBy && <div className="wide"><small>REFERRED BY</small><b>{order.referredBy}</b></div>}{order.customer.notes && <div className="wide"><small>CUSTOMER NOTE</small><b>{order.customer.notes}</b></div>}</div><div className="order-chat admin-chat"><div className="chat-heading"><div><span>💬</span><div><b>Chat with {order.customer.name}</b><small>Messages appear in the customer’s Track Order screen.</small></div></div><div className="chat-tools"><a className="chat-call-button" href={'tel:+91' + String(order.customer.phone).replace(/\D/g, '').slice(-10)}>📞 Call customer</a><small>ORDER CHAT</small></div></div><div className="chat-messages">{!order.chatMessages?.length ? <p>No messages yet.</p> : order.chatMessages.map(message => <article className={message.sender === 'admin' ? 'admin-message' : 'customer-message'} key={message.id}><b>{message.sender === 'admin' ? 'You' : order.customer.name}</b>{message.type === 'audio' && message.audioData ? <audio controls preload="metadata" src={message.audioData} /> : <span>{message.text}</span>}<small>{new Date(message.createdAt).toLocaleString('en-IN')}</small></article>)}</div><form onSubmit={event => sendAdminChat(event, order)}><input value={chatDrafts[order.id] || ''} onChange={event => setChatDrafts(current => ({ ...current, [order.id]: event.target.value }))} maxLength="500" placeholder="Type an update for the customer…" /><VoiceRecorderButton onSend={(audioData, duration) => sendAdminVoice(order, audioData, duration)} onError={setError} disabled={chatSending === order.id} /><button className="primary" disabled={chatSending === order.id || !(chatDrafts[order.id] || '').trim()}>{chatSending === order.id ? 'Sending…' : 'Send'}</button></form></div></section>}
         {!order.adminRead && <button className="mark-read" onClick={() => api('/orders/' + order.id + '/read', { method: 'PATCH' }).then(refresh)}><Icon name="check" />Mark notification read</button>}
       </article>)}</div>}
     </section>
